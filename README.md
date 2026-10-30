@@ -56,9 +56,29 @@ Paket adı: `com.benim.sinavhocasi` (test sürümü `com.benim.sinavhocasi.test`
 |---|---|
 | `CLOUDFLARE_API_TOKEN` | Cloudflare → My Profile → API Tokens → Create Token → **Edit Cloudflare Workers** şablonu |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare panelinde sağ altta "Account ID" |
-| `ANTHROPIC_API_KEY` | İsteğe bağlı; yapay zekâ soru/değerlendirme için |
+| `ANTHROPIC_API_KEY` | İsteğe bağlı; yapay zekâ soru/değerlendirme için (Plus özelliği) |
+| `GOOGLE_SA` | Plus satın alımlarını doğrulamak için Google Cloud hizmet hesabı JSON anahtarı (aşağıya bak) |
 
 Ardından Actions → **Sunucu (Cloudflare Worker)** → Run workflow. Eşitleme deposu (KV) kendiliğinden oluşturulur ve sunucu `https://sinav-hocasi.aliyuksekal.workers.dev` adresinde yayımlanır; uygulama bunu kendisi algılar. Anahtarlar yalnızca sunucuda durur.
+
+## Sınav Hocası Plus (aile aboneliği)
+
+Reklam yok. Gelir modeli veli telefonundan alınan **aile aboneliği**: Aylık **79,99 ₺**, Yıllık **769,99 ₺** (%20 indirimli), 7 gün ücretsiz deneme.
+Plus ile açılanlar: yapay zekâ ile soru hazırlama ve cevap değerlendirme, ikinci veli telefonu, 5 çocuğa kadar. Cihaz içi soru/değerlendirme, ilerleme ve veli raporu **her zaman ücretsiz**.
+
+**Neden kırılamaz?** Plus kararı telefonda değil, sunucuda verilir. Ödeme jetonu Google Play Developer API ile doğrulanır, aileye bağlanır, satın alanın gizli hesap kimliğiyle eşleşmek zorundadır ve başka hesapta kullanılamaz. Yapay zekâ ve ikinci veli istekleri her seferinde sunucuda kontrol edilir. APK'yı değiştirmek, root, sahte ödeme uygulamaları ya da `localStorage`'ı kurcalamak bu yüzden Plus açmaz. Etkin abonelik günde bir Google'a yeniden sorulur; iade edilen abonelik en geç 24 saatte kapanır. İstenirse Play Integrity ile değiştirilmiş uygulama ve root'lu cihazlar da tamamen reddedilir.
+
+**Kurulum (bir kez):**
+1. **Play Console** → uygulama → Para kazanma → Abonelikler → **Abonelik oluştur**: ürün kimliği `sinav_hocasi_plus`.
+   - Temel plan `aylik`: 1 ay, otomatik yenilenen, **79,99 TRY**.
+   - Temel plan `yillik`: 1 yıl, otomatik yenilenen, **769,99 TRY**.
+   - Teklif (isteğe bağlı): `yillik` (ve/veya `aylik`) üzerinde **7 günlük ücretsiz deneme**, uygunluk: "Yeni müşteri".
+2. **Google Cloud Console** → bir proje seç → **Google Play Android Developer API**'yi (ve Integrity için **Play Integrity API**'yi) etkinleştir → IAM → Hizmet hesapları → hesap oluştur → Anahtarlar → **JSON** anahtar indir.
+3. **Play Console** → Kullanıcılar ve izinler → hizmet hesabının e-postasını davet et → uygulama için **"Finansal verileri görüntüle"** ve **"Siparişleri ve abonelikleri yönet"** izinleri.
+4. GitHub'da JSON dosyasının tüm içeriğini `GOOGLE_SA` gizli değeri olarak ekle → Actions → **Sunucu** → Run workflow.
+5. (Uygulama Play'de yayımlandıktan sonra, önerilir) Play Console → Uygulama bütünlüğü → Play Integrity API'yi Cloud projesine bağla; proje **numarasını** `CLOUD_PROJECT_NUMBER` gizli değeri olarak ekle ve `server/wrangler.toml` içinde `INTEGRITY = "zorunlu"` yap. Bundan sonra yapay zekâ ve satın alma doğrulaması yalnızca Play'den indirilmiş, değiştirilmemiş uygulamada ve root'suz cihazda çalışır.
+
+Sunucu ayarları (`server/wrangler.toml`): `PLUS_PRODUCTS`, `DAILY_AI_LIMIT` (aile başına günlük yapay zekâ sınırı, varsayılan 200), `INTEGRITY`. Not: Ödeme yalnızca Play'den yüklenen uygulamada çalışır; GitHub'daki APK'da Plus ekranı planları gösteremez.
 
 ## Proje yapısı
 

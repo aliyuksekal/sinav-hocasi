@@ -80,6 +80,7 @@ export default {
       if (isSync) return json(await sync(url.pathname.slice(8), body, env));
       if (isPlus) return json(await plus(url.pathname.slice(10), body, env));
       // Yapay zekâ: geçerli Plus + günlük kota (+ isteğe bağlı cihaz bütünlüğü)
+      if (!['/api/sorular', '/api/degerlendir', '/api/metin'].includes(url.pathname)) return json({ error: 'Bulunamadı' }, 404);
       await requireAiAccess(body, env, url.pathname);
       if (url.pathname === '/api/sorular') return json(await questions(body, env));
       if (url.pathname === '/api/degerlendir') return json(await evaluate(body, env));
@@ -377,7 +378,8 @@ async function sync(action, b, env) {
 // ---------------------------------------------------------------------------
 // Plus: Google Play aboneliği doğrulama
 // ---------------------------------------------------------------------------
-const PLUS_OK_STATES = ['SUBSCRIPTION_STATE_ACTIVE', 'SUBSCRIPTION_STATE_IN_GRACE_PERIOD'];
+// İptal edilen (CANCELED) abonelik, ödenmiş dönem bitene kadar geçerlidir; iade/geri alma (REVOKED) ve süresi dolan anında kapanır
+const PLUS_OK_STATES = ['SUBSCRIPTION_STATE_ACTIVE', 'SUBSCRIPTION_STATE_IN_GRACE_PERIOD', 'SUBSCRIPTION_STATE_CANCELED'];
 const TOKEN_RE = /^[A-Za-z0-9._:-]{20,600}$/;
 function plusRequired(env) { return env.PLUS_REQUIRED !== 'hayir'; }
 const pkgName = (env) => env.PACKAGE_NAME || 'com.benim.sinavhocasi';
@@ -441,19 +443,29 @@ async function plusActive(env, familyId) {
   const raw = await env.SYNC.get('ent:' + familyId);
   if (!raw) return false;
   const ent = JSON.parse(raw);
-  if (ent.expiry > Date.now()) return true;
-  if (!env.GOOGLE_SA) return false;
+  const fresh = ent.expiry > Date.now();
+  if (!env.GOOGLE_SA) return fresh;
   const subRaw = await env.SYNC.get('sub:' + ent.sub);
   if (!subRaw) return false;
   const sub = JSON.parse(subRaw);
-  if (Date.now() - (sub.checked || 0) < 10 * 60 * 1000) return false; // en fazla 10 dakikada bir sor
+  const age = Date.now() - (sub.checked || 0);
+  // Etkinken günde bir Google'a yeniden sorulur: iade edilen ya da geri alınan abonelik en geç 24 saatte kapanır.
+  // Süresi geçmişse en fazla 10 dakikada bir sorulur (yenilenen abonelik hemen açılsın, Google'a yük binmesin).
+  if (fresh && age < 24 * 3600 * 1000) return true;
+  if (!fresh && age < 10 * 60 * 1000) return false;
   try {
     const info = readSub(await googleSubscription(env, sub.token), env);
     sub.expiry = info.expiry; sub.state = info.state; sub.checked = Date.now();
     await env.SYNC.put('sub:' + ent.sub, JSON.stringify(sub));
     for (const f of sub.families || []) await env.SYNC.put('ent:' + f, JSON.stringify({ sub: ent.sub, expiry: info.active ? info.expiry : 0 }));
     return info.active;
-  } catch { return false; }
+  } catch (e) {
+    if (e && e.status === 404) { // jeton artık yok: kapat
+      for (const f of sub.families || []) await env.SYNC.put('ent:' + f, JSON.stringify({ sub: ent.sub, expiry: 0 }));
+      return false;
+    }
+    return fresh; // Google'a geçici olarak ulaşılamıyorsa mevcut dönem korunur
+  }
 }
 
 // Play Integrity: istek gerçek uygulamadan ve güvenilir cihazdan mı?

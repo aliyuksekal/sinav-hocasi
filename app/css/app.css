@@ -620,3 +620,36 @@ body.no-tabs .toast-wrap { bottom: calc(16px + var(--safe-b)); }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 .field > .hint, .field > span.hint { font-weight: 400; font-size: .82rem; color: var(--ink-2); }
+
+/* ---------- Sınav Hocası Plus ---------- */
+.btn-lg { min-height: 56px; font-size: 1.05rem; }
+.plus-view { display: flex; flex-direction: column; gap: 14px; padding-top: 6px; }
+.plus-hero { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 14px; align-items: center; padding: 18px; border-radius: 22px;
+  background: radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--amber) 22%, transparent), transparent 60%), linear-gradient(135deg, color-mix(in srgb, var(--accent) 18%, var(--surface)), var(--surface));
+  border: 1px solid var(--line); box-shadow: var(--shadow-sm); }
+.plus-hero img { width: 88px; height: 88px; object-fit: contain; filter: drop-shadow(0 8px 16px color-mix(in srgb, var(--accent) 30%, transparent)); }
+.plus-hero h1 { margin: 4px 0 4px; font-size: 1.35rem; }
+.plus-hero p { margin: 0; color: var(--ink-2); font-size: .92rem; }
+.plus-tag { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 999px; font-size: .7rem; font-weight: 850; letter-spacing: .08em;
+  color: #3a2500; background: linear-gradient(135deg, #ffd66b, #ffb020); }
+.plus-tag svg { width: 13px; height: 13px; fill: currentColor; }
+.plus-on { display: flex; gap: 12px; align-items: center; padding: 14px; border-radius: 16px; background: var(--ok-soft); }
+.plus-on .ic { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: var(--ok); color: #fff; flex: none; }
+.plus-on .ic svg { width: 20px; height: 20px; }
+.plus-on b { display: block; }
+.plus-feats { list-style: none; margin: 0; padding: 4px 0; display: grid; gap: 12px; }
+.plus-feats li { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 12px; align-items: start; }
+.plus-feats .ic { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; background: var(--accent-soft); color: var(--accent); }
+.plus-feats .ic svg { width: 20px; height: 20px; }
+.plus-feats b { display: block; font-size: .95rem; }
+.plans { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.plan { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-align: left; padding: 18px 14px 14px; border-radius: 18px;
+  border: 2px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; min-height: 120px; font: inherit; transition: border-color .15s, box-shadow .15s, transform .15s; }
+.plan.on { border-color: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent); }
+.plan:active { transform: scale(.98); }
+.plan-badge { position: absolute; top: -10px; right: 10px; padding: 3px 9px; border-radius: 999px; font-size: .72rem; font-weight: 850; color: #fff; background: var(--ok); }
+.plan-name { font-weight: 800; color: var(--ink-2); font-size: .85rem; text-transform: uppercase; letter-spacing: .04em; }
+.plan-price b { font-size: 1.3rem; font-weight: 850; }
+.plan-price small { color: var(--ink-3); font-size: .8rem; }
+.plan-note { font-size: .78rem; color: var(--ink-2); line-height: 1.3; }
+@media (max-width: 340px) { .plans { grid-template-columns: 1fr; } .plus-hero { grid-template-columns: 64px minmax(0, 1fr); } .plus-hero img { width: 64px; height: 64px; } }

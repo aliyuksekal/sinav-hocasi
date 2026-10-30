@@ -10,7 +10,7 @@
   'use strict';
 
   const E = window.SHEngine;
-  const VERSION = '1.3.0';
+  const VERSION = '1.4.0';
   const API_BASE = 'https://sinav-hocasi.aliyuksekal.workers.dev';
   const MB = 1024 * 1024;
   const LIMITS = { imageBytes: 30 * MB, pdfBytes: 250 * MB, materials: 120, textChars: 400000, sessions: 300, answerChars: 4000, nameChars: 120, titleChars: 80 };
@@ -97,6 +97,7 @@
     link: [['path', { d: 'M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7' }], ['path', { d: 'M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7' }]],
     target: [['circle', { cx: 12, cy: 12, r: 10 }], ['circle', { cx: 12, cy: 12, r: 6 }], ['circle', { cx: 12, cy: 12, r: 2 }]],
     plus: [['path', { d: 'M12 5v14M5 12h14' }]],
+    star: [['path', { d: 'M12 3.2l2.6 5.5 6 .8-4.4 4.2 1.1 6-5.3-2.9-5.3 2.9 1.1-6-4.4-4.2 6-.8z' }]],
     more: [['circle', { cx: 12, cy: 5, r: 1.6 }], ['circle', { cx: 12, cy: 12, r: 1.6 }], ['circle', { cx: 12, cy: 19, r: 1.6 }]],
     clock: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'M12 7v5l3 2' }]],
     ticket: [['path', { d: 'M9 11h6M9 15h4M7 3h10a2 2 0 0 1 2 2v14l-3-2-2 2-2-2-2 2-2-2-3 2V5a2 2 0 0 1 2-2z' }]],
@@ -215,7 +216,7 @@
   }
 
   function sanitizeState(raw) {
-    const st = { v: 1, settings: Object.assign({}, DEFAULT_SETTINGS), sessions: [], drafts: {}, parent: null, days: {}, sync: null, children: [] };
+    const st = { v: 1, settings: Object.assign({}, DEFAULT_SETTINGS), sessions: [], drafts: {}, parent: null, days: {}, sync: null, children: [], plus: null };
     if (!raw || typeof raw !== 'object') return st;
     const s = raw.settings || {};
     st.settings.theme = ['auto', 'light', 'dark', 'amoled'].includes(s.theme) ? s.theme : 'auto';
@@ -235,6 +236,11 @@
         familyId: c.familyId, token: c.token, name: clampStr(c.name, 30), addedAt: Number(c.addedAt) || Date.now(),
         fetchedAt: Number(c.fetchedAt) || 0, revoked: !!c.revoked, sum: sanitizeSummary(c.sum), nick: clampStr(c.nick, 30).replace(/[<>]/g, '')
       }));
+    }
+    const pl = raw.plus;
+    if (pl && typeof pl === 'object') {
+      // Yalnızca görüntü önbelleği: Plus kararını her istekte sunucu verir
+      st.plus = { account: /^[a-f0-9]{32,64}$/.test(pl.account || '') ? pl.account : '', token: typeof pl.token === 'string' && /^[A-Za-z0-9._:-]{20,600}$/.test(pl.token) ? pl.token : '', active: pl.active === true, expiry: Number(pl.expiry) || 0, checked: Number(pl.checked) || 0 };
     }
     st.sessions = (Array.isArray(raw.sessions) ? raw.sessions : []).slice(-LIMITS.sessions).map(sanitizeSession).filter(Boolean);
     if (raw.drafts && typeof raw.drafts === 'object') {
@@ -373,16 +379,25 @@
   // ======================================================================
   const Native = (() => {
     const pending = new Map();
+    let purchaseCb = null;
     let info = {};
     if (IS_NATIVE) { try { info = JSON.parse(window.SHNative.info()) || {}; } catch (e) { info = {}; } }
+    function resolve(id, payload) {
+      const p = pending.get(id);
+      if (!p) return;
+      pending.delete(id);
+      let data = null;
+      try { data = typeof payload === 'string' ? JSON.parse(payload) : payload; } catch (e) { data = { ok: false, error: 'Yanıt okunamadı' }; }
+      if (data && data.ok) p.resolve(data); else p.reject(new Error(clampStr(data && data.error, 200) || 'İşlem başarısız'));
+    }
     window.SHBridge = Object.freeze({
-      resolve(id, payload) {
-        const p = pending.get(id);
-        if (!p) return;
-        pending.delete(id);
-        let data = null;
-        try { data = typeof payload === 'string' ? JSON.parse(payload) : payload; } catch (e) { data = { ok: false, error: 'Yanıt okunamadı' }; }
-        if (data && data.ok) p.resolve(data); else p.reject(new Error((data && data.error) || 'İşlem başarısız'));
+      resolve,
+      plusEvent(ev, payload) {
+        let d = null;
+        try { d = JSON.parse(payload); } catch (e) { return; }
+        if (!d || typeof d !== 'object') return;
+        if (ev === 'plus' && typeof d.id === 'string') resolve(d.id, d);
+        else if (ev === 'purchase' && purchaseCb) purchaseCb(d);
       },
       onBookProgress(payload) { try { const d = JSON.parse(payload); bookProgress(d); } catch (e) { /* yok say */ } },
       onBookDownloaded(payload) { try { const d = JSON.parse(payload); importDownloadedBook(d); } catch (e) { toast('İndirilen kitap içe aktarılamadı.', true); } },
@@ -408,7 +423,13 @@
       openExternal: (url) => { try { window.SHNative.openExternal(String(url)); return true; } catch (e) { return false; } },
       setTheme: (dark) => { try { window.SHNative.setTheme(!!dark); } catch (e) { /* yok say */ } },
       setColors: (dark, hex) => { try { if (typeof window.SHNative.setColors !== 'function') return false; window.SHNative.setColors(!!dark, String(hex)); return true; } catch (e) { return false; } },
-      shareImage: (b64, text) => { try { if (typeof window.SHNative.shareImage !== 'function') return false; window.SHNative.shareImage(String(b64), String(text)); return true; } catch (e) { return false; } }
+      shareImage: (b64, text) => { try { if (typeof window.SHNative.shareImage !== 'function') return false; window.SHNative.shareImage(String(b64), String(text)); return true; } catch (e) { return false; } },
+      plusProducts: () => call('plusProducts', [], 30000),
+      plusBuy: (offerToken, account) => call('plusBuy', [String(offerToken), String(account)], 30000),
+      plusRestore: () => call('plusRestore', [], 30000),
+      plusManage: () => { try { window.SHNative.plusManage(); } catch (e) { openExternal('https://play.google.com/store/account/subscriptions'); } },
+      integrity: (hash) => call('integrity', [String(hash)], 30000),
+      onPurchase: (fn) => { purchaseCb = fn; }
     };
   })();
 
@@ -425,7 +446,7 @@
   const Server = (() => {
     let status = 'bilinmiyor';
     let checking = null;
-    const caps = { ai: false, sync: false };
+    const caps = { ai: false, sync: false, plus: false, plusRequired: false, integrity: false };
     async function req(path, body, timeout) {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), timeout || 30000);
@@ -441,15 +462,31 @@
         const txt = await r.text();
         if (txt.length > 400000) throw new Error('Sunucu yanıtı çok büyük');
         const data = JSON.parse(txt);
+        if (r.status === 402 && /^\/api\/(sorular|degerlendir|metin)$/.test(path) && S.plus && S.plus.active) { S.plus.active = false; S.plus.checked = Date.now(); save(); }
         if (!r.ok) { const er = new Error(clampStr(data && data.error, 200) || 'Sunucu hatası (' + r.status + ')'); er.status = r.status; throw er; }
         return data;
       } finally { clearTimeout(t); }
     }
+    // Yapay zekâ isteğine aile kimliği ve (açıksa) Play Integrity jetonu eklenir
+    async function aiAuth(path) {
+      const b = {};
+      if (!S.sync) return b;
+      b.familyId = S.sync.familyId; b.token = S.sync.token;
+      if (caps.integrity && Native.can('integrity')) {
+        try { b.integrity = (await Native.integrity(sha256Hex(S.sync.familyId + ':' + path))).token; } catch (e) { /* sunucu reddeder, yerel motora düşülür */ }
+      }
+      return b;
+    }
     return {
       get status() { return status; },
-      get ready() { return status === 'bagli' && caps.ai && S.settings.ai; },
+      // Yapay zekâ yalnızca Plus'lı ailede denenir; asıl kontrol sunucudadır (istemci atlatılsa bile 402 döner)
+      get ready() { return status === 'bagli' && caps.ai && S.settings.ai && (!caps.plusRequired || !!(S.sync && S.plus && S.plus.active)); },
       get canSync() { return status === 'bagli' && caps.sync; },
       get caps() { return caps; },
+      async plus(action, body) {
+        if (!/^(durum|dogrula)$/.test(action)) throw new Error('Geçersiz işlem');
+        return req('/api/plus/' + action, body, 30000);
+      },
       async sync(action, body) {
         if (!/^[a-z-]{2,12}$/.test(action)) throw new Error('Geçersiz işlem');
         return req('/api/es/' + action, body, 20000);
@@ -458,25 +495,25 @@
         if (checking) return checking;
         if (!navigator.onLine) { status = 'cevrimdisi'; return Promise.resolve(status); }
         checking = req('/api/saglik', null, 6000)
-          .then((d) => { status = d && d.ok ? 'bagli' : 'kapali'; caps.ai = !!(d && (d.ai || (d.ok && d.ai === undefined))); caps.sync = !!(d && d.sync); })
+          .then((d) => { status = d && d.ok ? 'bagli' : 'kapali'; caps.ai = !!(d && (d.ai || (d.ok && d.ai === undefined))); caps.sync = !!(d && d.sync); caps.plus = !!(d && d.plus); caps.plusRequired = !!(d && d.plusRequired); caps.integrity = !!(d && d.integrity); })
           .catch(() => { status = 'kapali'; })
           .then(() => { checking = null; return status; });
         return checking;
       },
       async questions(payload) {
-        const d = await req('/api/sorular', payload, 60000);
+        const d = await req('/api/sorular', Object.assign({}, payload, await aiAuth('/api/sorular')), 60000);
         const qs = (Array.isArray(d.questions) ? d.questions : []).map(sanitizeQuestion).filter(Boolean);
         if (!qs.length) throw new Error('Sunucu soru üretemedi');
         return qs;
       },
       async evaluate(payload) {
-        const d = await req('/api/degerlendir', payload, 40000);
+        const d = await req('/api/degerlendir', Object.assign({}, payload, await aiAuth('/api/degerlendir')), 40000);
         const ev = sanitizeEval(Object.assign({}, d, { by: 'ai' }));
         if (!ev) throw new Error('Değerlendirme okunamadı');
         return ev;
       },
       async ocr(b64) {
-        const d = await req('/api/metin', { image: b64 }, 60000);
+        const d = await req('/api/metin', Object.assign({ image: b64 }, await aiAuth('/api/metin')), 60000);
         if (typeof d.text !== 'string') throw new Error('Metin okunamadı');
         return clampStr(d.text, 60000);
       }
@@ -983,10 +1020,10 @@
   function go(path) { if (location.hash !== '#/' + path) location.hash = '#/' + path; else render(); }
   window.addEventListener('hashchange', () => { closeSheet(true); render(); window.scrollTo(0, 0); });
 
-  const TAB_OF = { ana: 'ana', materyaller: 'materyaller', calis: 'calis', sinav: 'calis', sonuc: 'calis', ilerleme: 'ilerleme', oturum: 'ilerleme', veli: 'veli', vozet: 'vozet', vcocuk: 'vcocuk', vpaylas: 'vpaylas' };
+  const TAB_OF = { ana: 'ana', materyaller: 'materyaller', calis: 'calis', sinav: 'calis', sonuc: 'calis', ilerleme: 'ilerleme', oturum: 'ilerleme', veli: 'veli', vozet: 'vozet', vcocuk: 'vcocuk', vpaylas: 'vpaylas', vplus: 'vplus' };
   const TABS = {
     ogrenci: [['ana', 'Ana sayfa', 'home'], ['materyaller', 'Materyaller', 'book'], ['calis', 'Çalış', 'edit'], ['ilerleme', 'İlerleme', 'chart'], ['veli', 'Veli', 'users']],
-    veli: [['vozet', 'Özet', 'chart'], ['vcocuk', 'Çocuklarım', 'users'], ['vpaylas', 'Paylaş', 'share']]
+    veli: [['vozet', 'Özet', 'chart'], ['vcocuk', 'Çocuklarım', 'users'], ['vplus', 'Plus', 'star'], ['vpaylas', 'Paylaş', 'share']]
   };
   let tabMode = '';
   function renderTabbar(mode, tab) {
@@ -1015,11 +1052,11 @@
       if (!S.settings.introDone) node = viewIntro();
       else if (!role) node = viewRole();
       else if (role === 'veli') {
-        const name = ['vozet', 'vcocuk', 'vpaylas'].includes(r.name) ? r.name : 'vozet';
+        const name = ['vozet', 'vcocuk', 'vpaylas', 'vplus'].includes(r.name) ? r.name : 'vozet';
         renderTabbar('veli', name);
-        node = name === 'vcocuk' ? viewKids() : name === 'vpaylas' ? viewShareHub() : viewKidSummary();
+        node = name === 'vcocuk' ? viewKids() : name === 'vpaylas' ? viewShareHub() : name === 'vplus' ? viewPlus() : viewKidSummary();
       } else {
-        const tab = TAB_OF[r.name] && !/^v(ozet|cocuk|paylas)$/.test(r.name) ? TAB_OF[r.name] : 'ana';
+        const tab = TAB_OF[r.name] && !/^v(ozet|cocuk|paylas|plus)$/.test(r.name) ? TAB_OF[r.name] : 'ana';
         renderTabbar('ogrenci', tab);
         switch (r.name) {
           case 'materyaller': node = viewMaterials(); break;
@@ -2025,7 +2062,7 @@
             h('div', {}, h('span', { text: 'Son gönderim' }), h('span', { class: 'chip ' + (S.sync.error ? 'warn' : 'ok'), text: S.sync.lastPush ? ago(S.sync.lastPush) : 'Bekliyor' })),
             S.sync.error ? h('div', {}, h('span', { class: 'small muted', text: S.sync.error }), h('button', { class: 'btn btn-sm btn-soft', type: 'button', text: 'Şimdi gönder', on: { click: async () => { if (await Sync.push(true)) toast('Gönderildi.'); draw(); } } })) : null),
           h('div', { class: 'btn-row' },
-            h('button', { class: 'btn btn-secondary', type: 'button', on: { click: async () => { try { const d = await Server.sync('kod', { familyId: S.sync.familyId, token: S.sync.token }); showCode(d.code); } catch (e) { toast(e.message, true); } } } }, icon('link'), 'Başka veli ekle'),
+            h('button', { class: 'btn btn-secondary', type: 'button', on: { click: async () => { try { const d = await Server.sync('kod', { familyId: S.sync.familyId, token: S.sync.token }); showCode(d.code); } catch (e) { toast(e.status === 402 ? 'İkinci veli telefonu Sınav Hocası Plus ile eklenir. Plus, veli telefonundaki “Plus” sekmesinden başlatılır.' : e.message, true); } } } }, icon('link'), 'Başka veli ekle'),
             h('button', { class: 'btn btn-secondary', type: 'button', on: { click: listParents } }, icon('users'), 'Bağlı veliler')),
           h('button', { class: 'btn btn-danger btn-block', type: 'button', on: { click: async () => {
             if (!(await confirmBox('Bağlantı kaldırılsın mı?', 'Bütün veli telefonlarının bağlantısı kesilir ve buluttaki ilerleme özeti silinir.', 'Kaldır', true))) return;
@@ -2091,6 +2128,165 @@
     }
   }
 
+  // ======================================================================
+  // Sınav Hocası Plus — aile aboneliği (Google Play)
+  // Güvenlik: Bu kod yalnızca görüntü içindir. Plus'ın açtığı her şey (yapay zekâ, ikinci veli)
+  // sunucuda Google Play'e sorularak verilir; uygulama değiştirilse de Plus açılamaz.
+  // ======================================================================
+  const PLANS = [
+    { id: 'yillik', name: 'Yıllık', price: '769,99 ₺', per: '/ yıl', note: 'Ayda yalnızca 64,17 ₺', badge: '%20 indirim' },
+    { id: 'aylik', name: 'Aylık', price: '79,99 ₺', per: '/ ay', note: 'İstediğin zaman iptal et', badge: '' }
+  ];
+  const PLUS_FEATS = [
+    ['spark', 'Yapay zekâ ile soru hazırlama', 'Kitap sayfasından konuya ve sınıfa uygun, sınav tarzı sorular.'],
+    ['check', 'Yapay zekâ ile cevap değerlendirme', 'Cevabın anlamına göre puan, eksikler ve örnek doğru cevap.'],
+    ['users', 'İkinci veli telefonu', 'Anne ve baba ayrı telefonlardan aynı anda takip eder.'],
+    ['student', '5 çocuğa kadar', 'Tek abonelik bütün çocuklarına geçerli.'],
+    ['lock', 'Reklam yok, veri satışı yok', 'Çocuklar için güvenli; her zaman olduğu gibi.']
+  ];
+  const Plus = (() => {
+    let started = false;
+    function ensure() { if (!S.plus) S.plus = { account: '', token: '', active: false, expiry: 0, checked: 0 }; return S.plus; }
+    function account() {
+      const p = ensure();
+      if (!p.account) { const a = new Uint8Array(20); crypto.getRandomValues(a); p.account = Array.from(a, (x) => x.toString(16).padStart(2, '0')).join(''); save(true); }
+      return p.account;
+    }
+    const links = () => S.children.filter((k) => !k.revoked).slice(0, 5).map((k) => ({ familyId: k.familyId, token: k.token }));
+    function setState(active, expiry) { const p = ensure(); p.active = !!active; p.expiry = Number(expiry) || 0; p.checked = Date.now(); save(); }
+    async function refresh(force) {
+      const cred = S.settings.role === 'veli' ? S.children.find((k) => !k.revoked) : S.sync;
+      if (!cred) return !!(S.plus && S.plus.active);
+      if (!force && S.plus && Date.now() - S.plus.checked < (S.plus.active ? 6 * 3600e3 : 10 * 60e3)) return S.plus.active;
+      await Server.check();
+      if (!Server.caps.sync) return !!(S.plus && S.plus.active);
+      try { const d = await Server.plus('durum', { familyId: cred.familyId, token: cred.token }); setState(d.plus === true, d.expiry); } catch (e) { /* çevrimdışı: önbellek kalır */ }
+      return !!(S.plus && S.plus.active);
+    }
+    async function verify(purchaseToken, acct) {
+      const l = links();
+      if (!l.length) throw new Error('Önce “Çocuklarım” bölümünden en az bir çocuğu bağla.');
+      const body = { purchaseToken, account: acct, links: l };
+      if (Server.caps.integrity && Native.can('integrity')) {
+        try { body.integrity = (await Native.integrity(sha256Hex(acct + ':plus'))).token; } catch (e) { /* sunucu karar verir */ }
+      }
+      const d = await Server.plus('dogrula', body);
+      const p = ensure(); p.token = purchaseToken; p.account = acct;
+      setState(true, d.expiry); save(true);
+      return d;
+    }
+    async function handle(list) {
+      const arr = Array.isArray(list) ? list : [];
+      const ok = arr.find((x) => x && x.state === 'purchased' && typeof x.token === 'string');
+      if (!ok) { if (arr.some((x) => x && x.state === 'pending')) toast('Ödeme onay bekliyor. Onaylanınca Plus kendiliğinden açılır.'); return false; }
+      await verify(ok.token, /^[a-f0-9]{32,64}$/.test(ok.account || '') ? ok.account : account());
+      return true;
+    }
+    Native.onPurchase(async (d) => {
+      if (d.cancelled) { toast('Satın alma iptal edildi.'); return; }
+      if (d.code !== 0) { toast('Satın alma tamamlanamadı (' + (Number(d.code) || '?') + ').', true); return; }
+      try { if (await handle(d.purchases)) { toast('Sınav Hocası Plus etkin. Teşekkürler!'); render(); } }
+      catch (e) { toast((e.message || 'Doğrulanamadı') + ' Ödemen güvende; “Satın alımı geri yükle” ile tekrar deneyebilirsin.', true); }
+    });
+    // Veli telefonunda: bekleyen/yeni yenilenen satın alımları sessizce doğrula
+    async function start() {
+      if (started) return; started = true;
+      if (S.settings.role === 'veli' && Native.can('plus') && links().length) {
+        try { const r = await Native.plusRestore(); await Server.check(); if (Server.caps.plus) await handle(r.purchases); } catch (e) { /* sessiz */ }
+      }
+      await refresh();
+    }
+    // Yeni çocuk bağlanınca abonelik ona da uygulanır
+    async function relink() { if (S.plus && S.plus.token && S.plus.account) { try { await verify(S.plus.token, S.plus.account); } catch (e) { /* sonra tekrar */ } } }
+    return { account, links, refresh, verify, handle, start, relink, get active() { return !!(S.plus && S.plus.active); } };
+  })();
+
+  function periodText(p) {
+    const m = /^P(\d+)([DWMY])$/.exec(p || '');
+    if (!m) return '';
+    return m[1] + ' ' + { D: 'gün', W: 'hafta', M: 'ay', Y: 'yıl' }[m[2]];
+  }
+  function pickOffer(plans, base) {
+    const list = (plans || []).filter((p) => p && p.basePlan === base && typeof p.token === 'string');
+    if (!list.length) return null;
+    const phases = (o) => (Array.isArray(o.phases) ? o.phases : []);
+    const trialOf = (o) => phases(o).find((ph) => Number(ph.micros) === 0);
+    const best = list.find(trialOf) || list.find((o) => !o.offer) || list[0];
+    const recurring = phases(best).filter((ph) => Number(ph.micros) > 0).pop();
+    const tr = trialOf(best);
+    return { token: best.token, price: recurring ? clampStr(recurring.price, 30) : '', trial: tr ? periodText(tr.period) : '' };
+  }
+
+  let plusPlan = 'yillik';
+  function viewPlus() {
+    const wrap = h('div', { class: 'plus-view' });
+    let plans = null, loadErr = '', working = false;
+    const canBuy = Native.can('plus');
+    const draw = () => {
+      const active = Plus.active;
+      const hasKids = Plus.links().length > 0;
+      const chosen = plans ? pickOffer(plans, plusPlan) : null;
+      const cards = PLANS.map((p) => {
+        const live = plans ? pickOffer(plans, p.id) : null;
+        return h('button', { class: 'plan' + (plusPlan === p.id ? ' on' : ''), type: 'button', role: 'radio', 'aria-checked': String(plusPlan === p.id), on: { click: () => { plusPlan = p.id; draw(); } } },
+          p.badge ? h('span', { class: 'plan-badge', text: p.badge }) : null,
+          h('span', { class: 'plan-name', text: p.name }),
+          h('span', { class: 'plan-price' }, h('b', { text: (live && live.price) || p.price }), h('small', { text: ' ' + p.per })),
+          h('span', { class: 'plan-note', text: live && live.trial ? live.trial + ' ücretsiz, sonra ' + ((live && live.price) || p.price) + ' ' + p.per : p.note }));
+      });
+      const buyLabel = chosen && chosen.trial ? chosen.trial + ' ücretsiz dene' : 'Plus’ı başlat';
+      let actions;
+      if (!canBuy) {
+        actions = h('div', { class: 'stack' }, notice('Plus, Sınav Hocası Android uygulamasından Google Play ile alınır.'), h('button', { class: 'btn btn-primary btn-block', type: 'button', on: { click: () => openExternal(DOWNLOAD_URL) } }, icon('download'), 'Android uygulamasını indir'));
+      } else if (active) {
+        actions = h('div', { class: 'btn-row' },
+          h('button', { class: 'btn btn-secondary', type: 'button', on: { click: () => Native.plusManage() } }, icon('ticket'), 'Aboneliği yönet'),
+          h('button', { class: 'btn btn-soft', type: 'button', on: { click: async (e) => { e.currentTarget.disabled = true; await Plus.refresh(true); draw(); } } }, icon('refresh'), 'Durumu yenile'));
+      } else {
+        actions = h('div', { class: 'stack' },
+          !hasKids ? notice('Plus aileye bağlanır. Önce “Çocuklarım” bölümünden çocuğunu bağla, sonra Plus’ı başlat.') : null,
+          loadErr ? notice(loadErr) : null,
+          h('button', { class: 'btn btn-primary btn-block btn-lg', type: 'button', disabled: !hasKids || working || !chosen, on: { click: buy } }, icon('star'), working ? 'Bekle…' : !plans && !loadErr ? 'Planlar yükleniyor…' : buyLabel),
+          h('button', { class: 'btn btn-ghost btn-block', type: 'button', disabled: working || !hasKids, on: { click: restore } }, icon('refresh'), 'Satın alımı geri yükle'));
+      }
+      fill(wrap,
+        h('section', { class: 'plus-hero' },
+          h('img', { src: 'icons/owl-512.png', alt: '', width: 88, height: 88 }),
+          h('div', {}, h('span', { class: 'plus-tag' }, icon('star'), 'PLUS'), h('h1', { text: 'Sınav Hocası Plus' }), h('p', { text: 'Tek abonelik, bütün aile. Yapay zekâ destekli hocayla daha derin çalışma.' }))),
+        active ? h('div', { class: 'plus-on' }, h('span', { class: 'ic' }, icon('check')), h('div', {}, h('b', { text: 'Plus etkin' }), h('span', { class: 'small muted', text: S.plus && S.plus.expiry ? 'Sonraki yenileme: ' + new Date(S.plus.expiry).toLocaleDateString('tr-TR') : 'Bütün bağlı çocuklarında geçerli.' }))) : null,
+        h('ul', { class: 'plus-feats' }, PLUS_FEATS.map(([ic, t, d]) => h('li', {}, h('span', { class: 'ic' }, icon(ic)), h('div', {}, h('b', { text: t }), h('span', { class: 'small muted', text: d }))))),
+        !active ? h('div', { class: 'plans', role: 'radiogroup', 'aria-label': 'Plan seç' }, cards) : null,
+        actions,
+        h('p', { class: 'xs muted', css: { 'margin-top': '14px' }, text: 'Ücretsiz sürüm de tam çalışır: cihaz içinde soru hazırlama, değerlendirme, ilerleme ve veli raporu ücretsizdir. Ödeme Google Play hesabından alınır; abonelik, dönem bitmeden iptal edilmezse kendiliğinden yenilenir. Google Play › Abonelikler bölümünden istediğin an iptal edebilirsin.' }));
+    };
+    async function buy() {
+      const offer = pickOffer(plans, plusPlan);
+      if (!offer) { toast('Planlar yüklenemedi. İnternetini kontrol edip tekrar dene.', true); return; }
+      working = true; draw();
+      try {
+        await Server.check();
+        if (!Server.caps.plus) throw new Error('Ödeme doğrulama sunucusu şu an hazır değil. Biraz sonra tekrar dene; ücret alınmadı.');
+        await Native.plusBuy(offer.token, Plus.account());
+      } catch (e) { toast(e.message, true); }
+      working = false; draw();
+    }
+    async function restore() {
+      working = true; draw();
+      try {
+        await Server.check();
+        if (!Server.caps.plus) throw new Error('Ödeme doğrulama sunucusu şu an hazır değil. Biraz sonra tekrar dene.');
+        const r = await Native.plusRestore();
+        if (await Plus.handle(r.purchases)) toast('Plus geri yüklendi.');
+        else toast('Bu Google hesabında etkin bir Plus aboneliği bulunamadı.');
+      } catch (e) { toast(e.message, true); }
+      working = false; draw();
+    }
+    draw();
+    if (canBuy && !Plus.active) Native.plusProducts().then((d) => { plans = Array.isArray(d.plans) ? d.plans : []; if (!plans.length) loadErr = 'Abonelik planları şu an alınamadı.'; }).catch((e) => { loadErr = e.message; }).then(() => { if (route().name === 'vplus') draw(); });
+    if (Plus.links().length) Plus.refresh().then(() => { if (route().name === 'vplus') draw(); });
+    return wrap;
+  }
+
   function viewKidSummary() {
     if (!S.children.length) return viewPairParent();
     activeKid = Math.min(activeKid, S.children.length - 1);
@@ -2132,6 +2328,7 @@
         S.children.push(kid); activeKid = S.children.length - 1;
         save(true);
         await fetchKid(kid);
+        Plus.relink();
         toast('Bağlandı. İlerleme artık buraya gelecek.');
         onDone();
       } catch (e) { toast(e.status === 404 ? 'Kod bulunamadı ya da süresi doldu. Çocuğun telefonundan yeni kod al.' : (e.message || 'Bağlanamadı.'), true); btn.disabled = false; }
@@ -2238,6 +2435,7 @@
     const [hasPdf, hasOcr] = await Promise.all([probe('vendor/pdfjs/pdf.min.js'), probe('vendor/tesseract/tesseract.min.js')]);
     libAvailable.pdf = hasPdf; if (libAvailable.ocr === null) libAvailable.ocr = hasOcr;
     Server.check().then(() => { const el = $('#aiStatus'); if (el) el.replaceWith(aiChip()); });
+    Plus.refresh(true).then(() => { const el = $('#plusStatus'); if (el) el.replaceWith(plusChip()); });
     openSheet('Ayarlar', (b) => {
       const nameIn = h('input', { type: 'text', maxlength: 30, value: S.settings.name, placeholder: 'İsteğe bağlı', on: { change: (e) => { S.settings.name = clampStr(e.target.value, 30).replace(/[<>]/g, '').trim(); save(); } } });
       const ai = h('input', { type: 'checkbox', role: 'switch', checked: S.settings.ai, on: { change: (e) => { S.settings.ai = e.target.checked; save(); } } });
@@ -2262,7 +2460,7 @@
         h('div', { class: 'field' }, h('span', { text: 'Yazı boyutu' }), seg([['normal', 'Normal'], ['large', 'Büyük']], S.settings.textSize, (v) => { S.settings.textSize = v; save(); applyTheme(); }, 'Yazı boyutu')),
         h('label', { class: 'field' }, h('span', { text: 'Öğrencinin adı' }), nameIn, h('span', { class: 'hint', text: 'Yalnızca selamlamada kullanılır, cihazdan çıkmaz.' })),
         h('div', { class: 'panel tight' },
-          h('label', { class: 'switch' }, h('span', {}, h('b', { css: { display: 'block' }, text: 'Yapay zekâyı kullan' }), h('span', { class: 'hint', text: 'Açıkken seçtiğin metin ve cevaplar değerlendirme için sunucuya gönderilir; saklanmaz. Kapalıyken her şey cihazda yapılır.' })), ai),
+          h('label', { class: 'switch' }, h('span', {}, h('b', { css: { display: 'block' }, text: 'Yapay zekâyı kullan' }), h('span', { class: 'hint', text: 'Sınav Hocası Plus ile çalışır. Açıkken seçtiğin metin ve cevaplar değerlendirme için sunucuya gönderilir; saklanmaz. Plus yoksa ya da kapalıyken her şey cihazda yapılır.' })), ai),
           h('label', { class: 'switch' }, h('span', {}, h('b', { css: { display: 'block' }, text: 'Fotoğrafı otomatik metne dönüştür' }), h('span', { class: 'hint', text: 'Fotoğraf eklenince yazı hemen tanınır.' })), ocrAuto)),
         h('h2', { text: 'Özellik durumu', css: { 'margin-top': '22px' } }),
         h('div', { class: 'panel status-list' },
@@ -2272,7 +2470,8 @@
           h('div', {}, h('span', { text: 'Soru üretme ve değerlendirme' }), chip(true, 'Cihazda çalışır', '')),
           h('div', {}, h('span', { text: 'Yapay zekâ sunucusu' }), aiChip()),
           h('div', {}, h('span', { text: 'MEB kitabını uygulama içine indirme' }), chip(Native.can('books'), 'Çalışır', 'Android uygulamasında')),
-          h('div', {}, h('span', { text: 'Veli telefonuyla bulut eşitleme' }), chip(Server.canSync, 'Hazır', 'Sunucu bekleniyor'))),
+          h('div', {}, h('span', { text: 'Veli telefonuyla bulut eşitleme' }), chip(Server.canSync, 'Hazır', 'Sunucu bekleniyor')),
+          h('div', {}, h('span', { text: 'Sınav Hocası Plus' }), plusChip())),
         h('button', { class: 'btn btn-soft btn-block', type: 'button', css: { 'margin-top': '14px' }, on: { click: shareApp } }, icon('share'), 'Uygulamayı paylaş'),
         h('h2', { text: 'Verilerim', css: { 'margin-top': '22px' } }),
         h('div', { class: 'btn-row' },
@@ -2284,6 +2483,9 @@
           h('span', { class: 'xs muted', text: 'Sınav Hocası ' + VERSION + (Native.has ? ' (Android ' + clampStr(Native.info.version, 12) + ')' : ' (web)') + ', geliştirici: matali' }),
           h('a', { class: 'link-btn', href: 'gizlilik.html', text: 'Gizlilik' })));
     });
+  }
+  function plusChip() {
+    return h('span', { class: 'chip ' + (Plus.active ? 'ok' : 'warn'), id: 'plusStatus', text: Plus.active ? 'Etkin' : S.settings.role === 'veli' ? '“Plus” sekmesinden' : 'Veli telefonundan alınır' });
   }
   function aiChip() {
     const st = Server.status;
@@ -2302,7 +2504,7 @@
   }
 
   async function exportBackup() {
-    const data = { app: 'sinav-hocasi', v: 1, exportedAt: new Date().toISOString(), state: Object.assign({}, S, { parent: null }), materials: MATS.filter((m) => m.text).map((m) => ({ id: m.id, name: m.name, text: m.text, addedAt: m.addedAt, origin: m.origin })) };
+    const data = { app: 'sinav-hocasi', v: 1, exportedAt: new Date().toISOString(), state: Object.assign({}, S, { parent: null, plus: null }), materials: MATS.filter((m) => m.text).map((m) => ({ id: m.id, name: m.name, text: m.text, addedAt: m.addedAt, origin: m.origin })) };
     const json = JSON.stringify(data);
     if (Native.has && typeof window.SHNative.saveFile === 'function') { try { window.SHNative.saveFile('sinav-hocasi-yedek-' + dayKey(Date.now()) + '.json', json); return; } catch (e) { /* tarayıcı yoluna düş */ } }
     download('sinav-hocasi-yedek-' + dayKey(Date.now()) + '.json', json);
@@ -2318,6 +2520,7 @@
       if (!(await confirmBox('Yedek yüklensin mi?', 'Mevcut ilerlemen ve ayarların yedektekiyle değiştirilecek. Materyal metinleri listene eklenecek.', 'Yükle'))) return;
       const ns = sanitizeState(data.state);
       ns.parent = S.parent; // PIN yedekten alınmaz
+      ns.plus = S.plus; // abonelik bilgisi yedekten alınmaz
       Object.keys(S).forEach((k) => delete S[k]);
       Object.assign(S, ns);
       save(true);
@@ -2374,7 +2577,7 @@
     bindInputs();
     await loadMaterials();
     render();
-    Server.check().then(() => { if (['calis', 'vozet', 'vcocuk', 'veli'].includes(route().name) && !sheetOpen) render(); Sync.schedule(2000); });
+    Server.check().then(() => { if (['calis', 'vozet', 'vcocuk', 'veli'].includes(route().name) && !sheetOpen) render(); Sync.schedule(2000); Plus.start().then(() => { if (route().name === 'vplus' && !sheetOpen) render(); }); });
     probe('vendor/pdfjs/pdf.min.js').then((ok) => { libAvailable.pdf = ok; });
     if ('serviceWorker' in navigator && location.protocol === 'https:' && !Native.has && location.hostname !== 'appassets.androidplatform.net') {
       navigator.serviceWorker.register('sw.js').catch(() => { /* çevrimdışı önbellek isteğe bağlı */ });
