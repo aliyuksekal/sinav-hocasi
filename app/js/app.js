@@ -10,7 +10,7 @@
   'use strict';
 
   const E = window.SHEngine;
-  const VERSION = '1.0.0';
+  const VERSION = '1.1.0';
   const API_BASE = 'https://sinav-hocasi.aliyuksekal.workers.dev';
   const MB = 1024 * 1024;
   const LIMITS = { imageBytes: 30 * MB, pdfBytes: 250 * MB, materials: 120, textChars: 400000, sessions: 300, answerChars: 4000, nameChars: 120, titleChars: 80 };
@@ -18,6 +18,9 @@
   const GRADES = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', 'Diğer'];
   const IS_NATIVE = typeof window.SHNative === 'object' && window.SHNative !== null;
   const MEB_URL = 'https://tymm.meb.gov.tr/ders-kitaplari';
+  const SITE = 'https://aliyuksekal.github.io/sinav-hocasi/';
+  const DOWNLOAD_URL = SITE + 'indir.html';
+  const ID_RE = /^[A-Za-z0-9_-]{22,64}$/;
 
   // ======================================================================
   // DOM yardımcıları (güvenli)
@@ -46,6 +49,8 @@
     for (let i = 2; i < arguments.length; i++) append(el, arguments[i]);
     return el;
   }
+  // replaceChildren null/false değerleri "null" yazısına çevirir; bu yardımcı onları atlar
+  function fill(el) { el.replaceChildren(); for (let i = 1; i < arguments.length; i++) append(el, arguments[i]); return el; }
   function append(el, c) {
     if (c === null || c === undefined || c === false) return;
     if (Array.isArray(c)) { c.forEach((x) => append(el, x)); return; }
@@ -82,7 +87,15 @@
     upload: [['path', { d: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12' }]],
     edit: [['path', { d: 'M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z' }]],
     bulb: [['path', { d: 'M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z' }]],
-    refresh: [['path', { d: 'M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16' }]]
+    refresh: [['path', { d: 'M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16' }]],
+    home: [['path', { d: 'M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z' }]],
+    chart: [['path', { d: 'M3 3v18h18' }], ['path', { d: 'm7 15 4-4 3 3 5-6' }]],
+    users: [['path', { d: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2' }], ['circle', { cx: 9, cy: 7, r: 4 }], ['path', { d: 'M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8' }]],
+    student: [['path', { d: 'M22 10 12 5 2 10l10 5 10-5z' }], ['path', { d: 'M6 12v5c3 3 9 3 12 0v-5' }]],
+    parent: [['circle', { cx: 12, cy: 7, r: 4 }], ['path', { d: 'M5.5 21a6.5 6.5 0 0 1 13 0' }], ['path', { d: 'M12 14v3' }]],
+    cloud: [['path', { d: 'M17.5 19H8a6 6 0 1 1 5.7-7.9A4.5 4.5 0 1 1 17.5 19z' }]],
+    link: [['path', { d: 'M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7' }], ['path', { d: 'M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7' }]],
+    target: [['circle', { cx: 12, cy: 12, r: 10 }], ['circle', { cx: 12, cy: 12, r: 6 }], ['circle', { cx: 12, cy: 12, r: 2 }]]
   };
   function icon(name) {
     const svg = document.createElementNS(SVGNS, 'svg');
@@ -120,7 +133,7 @@
   // Kalıcı durum (localStorage) — okurken şemaya göre temizlenir
   // ======================================================================
   const KEY = 'sh:v1';
-  const DEFAULT_SETTINGS = { theme: 'auto', textSize: 'normal', name: '', ai: true, autoOcr: true };
+  const DEFAULT_SETTINGS = { theme: 'auto', textSize: 'normal', name: '', ai: true, autoOcr: true, role: '', introDone: false };
 
   function sanitizeQuestion(q, i) {
     if (!q || typeof q !== 'object') return null;
@@ -176,8 +189,27 @@
       questions, answers
     };
   }
+  // Öğrenciden veliye giden özet: cevap metni ve materyal içeriği taşımaz
+  function sanitizeSummary(x) {
+    if (!x || typeof x !== 'object') return null;
+    const n = (v, a, b) => { const k = Number(v); return Number.isFinite(k) ? Math.max(a, Math.min(b, Math.round(k))) : null; };
+    const arr = (a, m) => (Array.isArray(a) ? a.slice(0, m).filter((r) => r && typeof r === 'object') : []);
+    const days = {};
+    if (x.days && typeof x.days === 'object') Object.keys(x.days).filter((k) => /^\d{4}-\d{2}-\d{2}$/.test(k)).slice(-60).forEach((k) => { days[k] = n(x.days[k], 0, 864e5) || 0; });
+    const t = x.totals || {};
+    return {
+      v: 1, name: clampStr(x.name, 30), updatedAt: n(x.updatedAt, 0, 4e12) || 0,
+      totals: { answered: n(t.answered, 0, 1e6) || 0, avg: n(t.avg, 0, 100), ms: n(t.ms, 0, 1e11) || 0 },
+      streak: n(x.streak, 0, 3650) || 0, days,
+      subjects: arr(x.subjects, 20).map((r) => ({ subject: clampStr(r.subject, 40), avg: n(r.avg, 0, 100) || 0, n: n(r.n, 0, 1e6) || 0 })).filter((r) => r.subject),
+      weak: arr(x.weak, 8).map((r) => ({ topic: clampStr(r.topic, 80), subject: clampStr(r.subject, 40), avg: n(r.avg, 0, 100) || 0, n: n(r.n, 0, 1e6) || 0 })).filter((r) => r.topic),
+      sessions: arr(x.sessions, 40).map((r) => ({ title: clampStr(r.title, 80), subject: clampStr(r.subject, 40), grade: clampStr(r.grade, 10), at: n(r.at, 0, 4e12) || 0, answered: n(r.answered, 0, 100) || 0, total: n(r.total, 0, 100) || 0, avg: n(r.avg, 0, 100), ms: n(r.ms, 0, 1e9) || 0 })).filter((r) => r.title),
+      materials: n(x.materials, 0, 1e4) || 0
+    };
+  }
+
   function sanitizeState(raw) {
-    const st = { v: 1, settings: Object.assign({}, DEFAULT_SETTINGS), sessions: [], drafts: {}, parent: null, days: {} };
+    const st = { v: 1, settings: Object.assign({}, DEFAULT_SETTINGS), sessions: [], drafts: {}, parent: null, days: {}, sync: null, children: [] };
     if (!raw || typeof raw !== 'object') return st;
     const s = raw.settings || {};
     st.settings.theme = ['auto', 'light', 'dark'].includes(s.theme) ? s.theme : 'auto';
@@ -185,6 +217,18 @@
     st.settings.name = clampStr(s.name, 30).replace(/[<>]/g, '');
     st.settings.ai = s.ai !== false;
     st.settings.autoOcr = s.autoOcr !== false;
+    st.settings.role = ['ogrenci', 'veli'].includes(s.role) ? s.role : '';
+    st.settings.introDone = s.introDone === true;
+    const sy = raw.sync;
+    if (sy && typeof sy === 'object' && ID_RE.test(sy.familyId || '') && ID_RE.test(sy.token || '')) {
+      st.sync = { familyId: sy.familyId, token: sy.token, lastPush: Number(sy.lastPush) || 0, lastHash: clampStr(sy.lastHash, 32), error: clampStr(sy.error, 200) };
+    }
+    if (Array.isArray(raw.children)) {
+      st.children = raw.children.slice(0, 8).filter((c) => c && ID_RE.test(c.familyId || '') && ID_RE.test(c.token || '')).map((c) => ({
+        familyId: c.familyId, token: c.token, name: clampStr(c.name, 30), addedAt: Number(c.addedAt) || Date.now(),
+        fetchedAt: Number(c.fetchedAt) || 0, revoked: !!c.revoked, sum: sanitizeSummary(c.sum)
+      }));
+    }
     st.sessions = (Array.isArray(raw.sessions) ? raw.sessions : []).slice(-LIMITS.sessions).map(sanitizeSession).filter(Boolean);
     if (raw.drafts && typeof raw.drafts === 'object') {
       Object.keys(raw.drafts).slice(0, 200).forEach((k) => { if (typeof raw.drafts[k] === 'string') st.drafts[clampStr(k, 80)] = clampStr(raw.drafts[k], LIMITS.answerChars); });
@@ -216,7 +260,7 @@
     };
     if (now) run(); else saveTimer = setTimeout(run, 250);
   }
-  document.addEventListener('visibilitychange', () => { if (document.hidden) { Timer.flush(); save(true); } });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { Timer.flush(); save(true); if (typeof Sync !== 'undefined') Sync.push(); } });
   window.addEventListener('pagehide', () => { Timer.flush(); save(true); });
 
   // ======================================================================
@@ -354,7 +398,8 @@
       releaseDownload: (name) => { try { window.SHNative.releaseDownload(String(name)); } catch (e) { /* yok say */ } },
       share: (text) => { try { window.SHNative.share(String(text)); return true; } catch (e) { return false; } },
       openExternal: (url) => { try { window.SHNative.openExternal(String(url)); return true; } catch (e) { return false; } },
-      setTheme: (dark) => { try { window.SHNative.setTheme(!!dark); } catch (e) { /* yok say */ } }
+      setTheme: (dark) => { try { window.SHNative.setTheme(!!dark); } catch (e) { /* yok say */ } },
+      shareImage: (b64, text) => { try { if (typeof window.SHNative.shareImage !== 'function') return false; window.SHNative.shareImage(String(b64), String(text)); return true; } catch (e) { return false; } }
     };
   })();
 
@@ -371,6 +416,7 @@
   const Server = (() => {
     let status = 'bilinmiyor';
     let checking = null;
+    const caps = { ai: false, sync: false };
     async function req(path, body, timeout) {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), timeout || 30000);
@@ -386,18 +432,24 @@
         const txt = await r.text();
         if (txt.length > 400000) throw new Error('Sunucu yanıtı çok büyük');
         const data = JSON.parse(txt);
-        if (!r.ok) throw new Error(clampStr(data && data.error, 200) || 'Sunucu hatası (' + r.status + ')');
+        if (!r.ok) { const er = new Error(clampStr(data && data.error, 200) || 'Sunucu hatası (' + r.status + ')'); er.status = r.status; throw er; }
         return data;
       } finally { clearTimeout(t); }
     }
     return {
       get status() { return status; },
-      get ready() { return status === 'bagli' && S.settings.ai; },
+      get ready() { return status === 'bagli' && caps.ai && S.settings.ai; },
+      get canSync() { return status === 'bagli' && caps.sync; },
+      get caps() { return caps; },
+      async sync(action, body) {
+        if (!/^[a-z-]{2,12}$/.test(action)) throw new Error('Geçersiz işlem');
+        return req('/api/es/' + action, body, 20000);
+      },
       check() {
         if (checking) return checking;
         if (!navigator.onLine) { status = 'cevrimdisi'; return Promise.resolve(status); }
         checking = req('/api/saglik', null, 6000)
-          .then((d) => { status = d && d.ok ? 'bagli' : 'kapali'; })
+          .then((d) => { status = d && d.ok ? 'bagli' : 'kapali'; caps.ai = !!(d && (d.ai || (d.ok && d.ai === undefined))); caps.sync = !!(d && d.sync); })
           .catch(() => { status = 'kapali'; })
           .then(() => { checking = null; return status; });
         return checking;
@@ -891,31 +943,59 @@
   function go(path) { if (location.hash !== '#/' + path) location.hash = '#/' + path; else render(); }
   window.addEventListener('hashchange', () => { closeSheet(true); render(); window.scrollTo(0, 0); });
 
-  const TAB_OF = { ana: 'ana', materyaller: 'materyaller', calis: 'calis', sinav: 'calis', sonuc: 'calis', ilerleme: 'ilerleme', oturum: 'ilerleme', veli: 'veli' };
+  const TAB_OF = { ana: 'ana', materyaller: 'materyaller', calis: 'calis', sinav: 'calis', sonuc: 'calis', ilerleme: 'ilerleme', oturum: 'ilerleme', veli: 'veli', vozet: 'vozet', vcocuk: 'vcocuk', vpaylas: 'vpaylas' };
+  const TABS = {
+    ogrenci: [['ana', 'Ana sayfa', 'home'], ['materyaller', 'Materyaller', 'book'], ['calis', 'Çalış', 'edit'], ['ilerleme', 'İlerleme', 'chart'], ['veli', 'Veli', 'users']],
+    veli: [['vozet', 'Özet', 'chart'], ['vcocuk', 'Çocuklarım', 'users'], ['vpaylas', 'Paylaş', 'share']]
+  };
+  let tabMode = '';
+  function renderTabbar(mode, tab) {
+    const nav = $('.tabbar');
+    if (tabMode !== mode) {
+      tabMode = mode;
+      nav.style.setProperty('grid-template-columns', 'repeat(' + TABS[mode].length + ', 1fr)');
+      fill(nav, ...TABS[mode].map(([id, label, ic]) => h('a', { href: '#/' + id, 'data-tab': id }, h('span', { class: 'pill' }, icon(ic)), label)));
+    }
+    nav.querySelectorAll('a').forEach((a) => { if (a.dataset.tab === tab) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+  }
 
+  let pollTimer = 0;
   function render() {
     const r = route();
     const view = $('#view');
+    clearInterval(pollTimer);
     if (r.name !== 'sinav') Timer.stop();
-    const tab = TAB_OF[r.name] || 'ana';
-    document.querySelectorAll('.tabbar a').forEach((a) => { if (a.dataset.tab === tab) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+    if (r.name !== 'veli') parentUnlocked = false; // Veli sekmesinden çıkınca panel yeniden kilitlenir
     let node;
+    const role = S.settings.role;
+    const bare = !S.settings.introDone || !role;
+    document.body.classList.toggle('no-tabs', bare);
     try {
-      switch (r.name) {
-        case 'materyaller': node = viewMaterials(); break;
-        case 'calis': node = viewStudy(); break;
-        case 'sinav': node = viewExam(r.arg); break;
-        case 'sonuc': node = viewResult(r.arg); break;
-        case 'ilerleme': node = viewProgress(); break;
-        case 'oturum': node = viewReview(r.arg); break;
-        case 'veli': node = viewParent(); break;
-        default: node = viewHome();
+      if (!S.settings.introDone) node = viewIntro();
+      else if (!role) node = viewRole();
+      else if (role === 'veli') {
+        const name = ['vozet', 'vcocuk', 'vpaylas'].includes(r.name) ? r.name : 'vozet';
+        renderTabbar('veli', name);
+        node = name === 'vcocuk' ? viewKids() : name === 'vpaylas' ? viewShareHub() : viewKidSummary();
+      } else {
+        const tab = TAB_OF[r.name] && !/^v(ozet|cocuk|paylas)$/.test(r.name) ? TAB_OF[r.name] : 'ana';
+        renderTabbar('ogrenci', tab);
+        switch (r.name) {
+          case 'materyaller': node = viewMaterials(); break;
+          case 'calis': node = viewStudy(); break;
+          case 'sinav': node = viewExam(r.arg); break;
+          case 'sonuc': node = viewResult(r.arg); break;
+          case 'ilerleme': node = viewProgress(); break;
+          case 'oturum': node = viewReview(r.arg); break;
+          case 'veli': node = viewParent(); break;
+          default: node = viewHome();
+        }
       }
     } catch (e) {
-      node = h('div', { class: 'empty' }, h('b', { text: 'Bu ekran açılamadı.' }), h('p', { text: 'Ana sayfaya dönüp tekrar dene.' }), h('button', { class: 'btn btn-primary', type: 'button', text: 'Ana sayfaya dön', on: { click: () => go('ana') } }));
+      node = h('div', { class: 'empty' }, h('b', { text: 'Bu ekran açılamadı.' }), h('p', { text: 'Ana sayfaya dönüp tekrar dene.' }), h('button', { class: 'btn btn-primary', type: 'button', text: 'Ana sayfaya dön', on: { click: () => go(S.settings.role === 'veli' ? 'vozet' : 'ana') } }));
       console.error(e);
     }
-    view.replaceChildren(h('div', { class: 'view' }, node));
+    fill(view, h('div', { class: 'view' }, node));
   }
 
   // ======================================================================
@@ -1014,6 +1094,7 @@
       !real.length ? h('div', { class: 'panel tight', css: { 'margin-top': '12px' } },
         h('div', { class: 'row spread' }, h('div', {}, h('b', { text: 'Önce denemek ister misin?' }), h('p', { class: 'muted small', text: 'Hazır bir Fen konusu üzerinde akışı dene. Sonuçlar “Demo” olarak işaretlenir.' })),
           h('button', { class: 'btn btn-soft btn-sm', type: 'button', text: 'Demoyu aç', on: { click: startDemo } }))) : null,
+      h('div', { css: { 'margin-top': '16px' } }, shareAppCard()),
       recent.length ? h('div', {}, h('div', { class: 'section-head' }, h('h2', { text: 'Son materyaller' }), h('button', { class: 'link-btn', type: 'button', text: 'Tümü', on: { click: () => go('materyaller') } })), h('div', { class: 'mat-list' }, recent.map(materialCard))) : null
     );
   }
@@ -1110,8 +1191,8 @@
   }
 
   function renderBookProgress(el) {
-    if (!bookState) { el.replaceChildren(); return; }
-    el.replaceChildren(h('div', { class: 'busy' }, h('div', { class: 'spinner' }), h('div', { class: 'grow' }, h('div', { text: 'İndiriliyor: ' + (bookState.name || 'ders kitabı') }), h('div', { class: 'progress-line' }, h('i', { css: { width: bookState.pct + '%' } })))));
+    if (!bookState) { fill(el); return; }
+    fill(el, h('div', { class: 'busy' }, h('div', { class: 'spinner' }), h('div', { class: 'grow' }, h('div', { text: 'İndiriliyor: ' + (bookState.name || 'ders kitabı') }), h('div', { class: 'progress-line' }, h('i', { css: { width: bookState.pct + '%' } })))));
   }
 
   function openBooksSheet() {
@@ -1229,14 +1310,14 @@
     submit.addEventListener('click', async () => {
       if (!sel.size) return;
       submit.disabled = true;
-      busyBox.replaceChildren(h('div', { class: 'busy', role: 'status' }, h('div', { class: 'spinner' }), 'Hoca soruları hazırlıyor…'));
+      fill(busyBox, h('div', { class: 'busy', role: 'status' }, h('div', { class: 'spinner' }), 'Hoca soruları hazırlıyor…'));
       try {
         const firstName = (MATS.find((m) => sel.has(m.id)) || {}).name || 'Çalışma';
         const s = await createSession({ materialIds: Array.from(sel), title: form.title.trim() || firstName, subject: form.subject, grade: form.grade, count: form.count, level: form.level });
         const note = s.questions.length < form.count ? ' Metin kısa olduğu için ' + s.questions.length + ' soru çıkarılabildi.' : '';
         toast((s.engine === 'ai' ? 'Sorular yapay zekâ ile hazırlandı.' : 'Sorular cihazında hazırlandı.') + note);
         go('sinav/' + s.id);
-      } catch (e) { toast(e.message, true); busyBox.replaceChildren(); submit.disabled = false; }
+      } catch (e) { toast(e.message, true); fill(busyBox); submit.disabled = false; }
     });
 
     const engineNote = Server.ready
@@ -1315,7 +1396,7 @@
       }));
 
       const paper = h('div', { class: 'sheet-paper' },
-        h('div', { class: 'row spread' }, h('span', { class: 'qnum', text: 'Soru ' + (s.idx + 1) + ' / ' + s.questions.length }), q.topic ? h('span', { class: 'chip', text: clampStr(q.topic, 30) }) : null),
+        h('div', { class: 'row spread' }, h('span', { class: 'qnum', text: 'Soru ' + (s.idx + 1) + ' / ' + s.questions.length }), h('div', { class: 'row' }, q.topic ? h('span', { class: 'chip', text: clampStr(q.topic, 24) }) : null, h('button', { class: 'qshare', type: 'button', 'aria-label': 'Bu soruyu arkadaşlarınla paylaş', title: 'Soruyu paylaş', on: { click: () => shareQuestion(s, q) } }, icon('share')))),
         h('p', { class: 'qtext', id: 'qtext', text: q.q }));
 
       const showForm = !a || !a.eval || editing;
@@ -1330,19 +1411,20 @@
         const hintBtn = q.keys.length && !q.exact ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', on: { click: () => {
           const used = s.answers[q.id] || (s.answers[q.id] = { text: '', at: Date.now(), hint: false, eval: null });
           used.hint = true; save();
-          hintBox.replaceChildren(notice('İpucu: cevabında “' + q.keys[0] + '” ile ilgili bilgiye yer ver. ' + (q.keys.length > 1 ? 'Toplam ' + q.keys.length + ' önemli noktaya değinmeye çalış.' : ''), 'info'));
+          fill(hintBox, notice('İpucu: cevabında “' + q.keys[0] + '” ile ilgili bilgiye yer ver. ' + (q.keys.length > 1 ? 'Toplam ' + q.keys.length + ' önemli noktaya değinmeye çalış.' : ''), 'info'));
           hintBtn.remove();
         } } }, icon('bulb'), 'İpucu') : null;
         send.addEventListener('click', async () => {
           const text = area.value.trim();
           if (text.length < 2) { toast('Önce bir cevap yaz.', true); area.focus(); return; }
           send.disabled = true; area.readOnly = true;
-          send.replaceChildren(h('span', { class: 'spinner' }), 'Değerlendiriliyor…');
+          fill(send, h('span', { class: 'spinner' }), 'Değerlendiriliyor…');
           const ev = await evaluateAnswer(s, q, text.slice(0, LIMITS.answerChars));
           const prev = s.answers[q.id];
           s.answers[q.id] = { text: text.slice(0, LIMITS.answerChars), at: Date.now(), hint: !!(prev && prev.hint), eval: ev };
           delete S.drafts[draftKey];
           if (Object.keys(s.answers).filter((k) => s.answers[k].eval).length === s.questions.length && !s.finishedAt) s.finishedAt = Date.now();
+          Sync.schedule();
           editing = false;
           Timer.flush(); save(true);
           draw();
@@ -1350,7 +1432,7 @@
           if (g) g.scrollIntoView({ behavior: 'smooth', block: 'start' });
         });
         paper.append(area, h('div', { class: 'answer-meta' }, h('span', { text: 'Taslağın otomatik saklanır.' }), count));
-        wrap.replaceChildren(
+        fill(wrap, 
           examHead(s, st), dots, paper, hintBox,
           h('div', { class: 'exam-nav' },
             h('button', { class: 'btn btn-secondary icon-only', type: 'button', 'aria-label': 'Önceki soru', disabled: s.idx === 0, on: { click: () => { s.idx--; editing = false; save(); draw(); } } }, icon('left')),
@@ -1359,7 +1441,7 @@
           hintBtn ? h('div', { css: { 'margin-top': '8px', 'text-align': 'center' } }, hintBtn) : null);
       } else {
         paper.append(h('div', { class: 'stack', css: { 'margin-top': '14px' } }, h('div', { class: 'label', text: 'Cevabın' }), h('p', { css: { 'white-space': 'pre-wrap' }, text: a.text })));
-        wrap.replaceChildren(examHead(s, st), dots, paper,
+        fill(wrap, examHead(s, st), dots, paper,
           gradeCard(q, a, () => { editing = true; S.drafts[draftKey] = a.text; draw(); setTimeout(() => { const t = $('#answer'); if (t) t.focus(); }, 50); },
             () => { if (isLast || st.answered === st.total) { if (st.answered === st.total) { if (!s.finishedAt) { s.finishedAt = Date.now(); save(true); } go('sonuc/' + s.id); } else { const next = s.questions.findIndex((qq) => !(s.answers[qq.id] && s.answers[qq.id].eval)); s.idx = next < 0 ? s.idx : next; save(); draw(); window.scrollTo(0, 0); } } else { s.idx++; save(); draw(); window.scrollTo(0, 0); } }, isLast && st.answered === st.total));
       }
@@ -1403,6 +1485,7 @@
       })),
       h('div', { class: 'btn-row' },
         weak.length ? h('button', { class: 'btn btn-primary', type: 'button', on: { click: () => retryWeak(s, weak) } }, icon('refresh'), 'Zayıf soruları tekrar çalış') : null,
+        st.answered ? h('button', { class: 'btn btn-soft', type: 'button', on: { click: () => shareResult(s) } }, icon('share'), 'Sonucumu paylaş') : null,
         h('button', { class: 'btn btn-secondary', type: 'button', text: 'Ana sayfa', on: { click: () => go('ana') } })));
   }
 
@@ -1421,7 +1504,10 @@
   // EKRAN: İlerleme
   // ======================================================================
   function trendChart(list) {
-    const pts = list.map((s) => ({ s, st: sessionStats(s) })).filter((x) => x.st.avg !== null).slice(-12);
+    return trendSvg(list.map((s) => sessionStats(s).avg));
+  }
+  function trendSvg(values) {
+    const pts = values.filter((v) => v !== null && v !== undefined).slice(-12).map((v) => ({ st: { avg: v } }));
     if (pts.length < 2) return h('p', { class: 'muted small', text: 'Eğilim grafiği için en az iki tamamlanmış çalışma gerekir.' });
     const W = 340, H = 150, P = 26;
     const x = (i) => P + (i * (W - P - 10)) / (pts.length - 1);
@@ -1436,8 +1522,8 @@
     return svg;
   }
 
-  function subjectBars(list) {
-    const rows = bySubject(list);
+  function subjectBars(list) { return barsFromRows(bySubject(list)); }
+  function barsFromRows(rows) {
     if (!rows.length) return h('p', { class: 'muted small', text: 'Henüz ders bazında veri yok.' });
     return h('div', { class: 'bars' }, rows.map((r) => h('div', { class: 'bar' },
       h('span', { text: r.subject }),
@@ -1445,12 +1531,13 @@
       h('b', { text: '%' + r.avg }))));
   }
 
-  function weekStrip() {
+  function weekStrip(daysMap) {
+    const days = daysMap || S.days;
     const names = ['Pz', 'Pt', 'Sa', 'Ça', 'Pe', 'Cu', 'Ct'];
     const box = h('div', { class: 'week' });
     for (let i = 6; i >= 0; i--) {
       const d = new Date(); d.setDate(d.getDate() - i);
-      const ms = S.days[dayKey(d)] || 0;
+      const ms = days[dayKey(d)] || 0;
       box.append(h('div', {}, h('i', { class: ms > 0 ? 'on' : '', title: fmtMin(ms) }), names[d.getDay()]));
     }
     return box;
@@ -1533,9 +1620,9 @@
   function pinPad(title, sub, onDone) {
     let val = '';
     const dots = h('div', { class: 'pin', 'aria-hidden': 'true' });
-    const live = h('p', { class: 'small muted', 'aria-live': 'polite', css: { 'text-align': 'center', 'min-height': '22px' } });
+    const live = h('p', { class: 'small muted', 'aria-live': 'polite', css: { 'text-align': 'center', 'min-height': '20px', margin: '0 0 8px' } });
     const okBtn = h('button', { class: 'fn', type: 'button', text: 'Tamam', 'aria-label': 'PIN’i onayla' });
-    const paint = () => { dots.replaceChildren(...Array.from({ length: Math.max(4, val.length) }, (_, i) => h('i', { class: i < val.length ? 'on' : '' }))); okBtn.disabled = val.length < 4; };
+    const paint = () => { fill(dots, ...Array.from({ length: Math.max(4, val.length) }, (_, i) => h('i', { class: i < val.length ? 'on' : '' }))); okBtn.disabled = val.length < 4; };
     const press = (d) => { if (val.length < 8) { val += d; paint(); } };
     okBtn.addEventListener('click', async () => { if (val.length < 4) return; const v = val; val = ''; paint(); await onDone(v, live); });
     const pad = h('div', { class: 'keypad' },
@@ -1543,7 +1630,7 @@
       h('button', { class: 'fn', type: 'button', text: 'Sil', 'aria-label': 'Son rakamı sil', on: { click: () => { val = val.slice(0, -1); paint(); } } }),
       h('button', { type: 'button', text: '0', on: { click: () => press('0') } }), okBtn);
     paint();
-    const node = h('div', { class: 'panel', css: { 'text-align': 'center' } }, h('div', { css: { color: 'var(--accent)', display: 'grid', 'place-items': 'center' } }, icon('lock')), h('h2', { css: { 'margin-top': '8px' }, text: title }), h('p', { class: 'muted small', text: sub }), dots, live, pad);
+    const node = h('div', { class: 'panel pin-panel' }, h('div', { class: 'lock-ic' }, icon('lock')), h('h2', { text: title }), h('p', { class: 'muted small', text: sub }), dots, live, pad);
     node.addEventListener('keydown', (e) => { if (/^\d$/.test(e.key)) press(e.key); else if (e.key === 'Backspace') { val = val.slice(0, -1); paint(); } else if (e.key === 'Enter') okBtn.click(); });
     node.tabIndex = -1;
     return node;
@@ -1584,61 +1671,433 @@
       setTimeout(() => pad.focus({ preventScroll: true }), 50);
       return box;
     }
-    return parentReport(box);
-  }
-
-  function parentSummaryText() {
-    const real = realSessions();
-    const t = totals(real);
-    const last = real[real.length - 1];
-    const weak = weakTopics(real);
-    const lines = ['Sınav Hocası çalışma raporu (' + new Date().toLocaleDateString('tr-TR') + ')' + (S.settings.name ? ' – ' + S.settings.name : '')];
-    lines.push('Çözülen soru: ' + t.answered + ', ortalama başarı: ' + (t.avg === null ? '-' : '%' + t.avg) + ', toplam çalışma: ' + fmtMin(t.ms));
-    if (last) lines.push('Son çalışma: ' + fmtDateTime(last.createdAt) + ' – ' + last.title + ' (' + last.subject + ')');
-    bySubject(real).forEach((r) => lines.push('• ' + r.subject + ': %' + r.avg + ' (' + r.n + ' soru)'));
-    if (weak.length) lines.push('Tekrar önerisi: ' + weak.map((w) => w.topic).join(', '));
-    return lines.join('\n');
-  }
-
-  function parentReport(box) {
-    const real = realSessions();
-    const t = totals(real);
-    const weak = weakTopics(real);
-    const subs = bySubject(real);
-    const strong = subs.filter((r) => r.avg >= 75);
-    const weekMs = (() => { let ms = 0; for (let i = 0; i < 7; i++) { const d = new Date(); d.setDate(d.getDate() - i); ms += S.days[dayKey(d)] || 0; } return ms; })();
     box.append(
-      notice('Bu rapor yalnızca bu cihazdaki çalışmaları gösterir. Öğrencinin yazdığı cevap metinleri gizlilik için burada gösterilmez.', 'info'),
-      !real.length ? h('div', { class: 'empty', css: { 'margin-top': '14px' } }, h('b', { text: 'Henüz rapor oluşacak çalışma yok' }), h('p', { text: 'Çocuğunuz kendi materyaliyle çalıştıkça burada ders, süre ve başarı bilgileri görünür. Demo çalışmalar sayılmaz.' })) : h('div', {},
-        h('div', { class: 'stats', css: { 'margin-top': '14px' } },
-          h('div', { class: 'stat' }, h('b', { text: fmtMin(weekMs) }), h('span', { text: 'son 7 gün çalışma' })),
-          h('div', { class: 'stat' }, h('b', { text: fmtNum(t.answered) }), h('span', { text: 'tamamlanan soru' })),
-          h('div', { class: 'stat' }, h('b', { text: t.avg === null ? '–' : '%' + t.avg }), h('span', { text: 'genel ilerleme' })),
-          h('div', { class: 'stat' }, h('b', { text: streak() + ' gün' }), h('span', { text: 'kesintisiz çalışma' }))),
-        h('div', { class: 'section-head' }, h('h2', { text: 'Çalıştığı günler' })),
-        h('div', { class: 'panel' }, weekStrip()),
-        h('div', { class: 'section-head' }, h('h2', { text: 'Derslere göre başarı' })),
-        h('div', { class: 'panel' }, subjectBars(real)),
-        h('div', { class: 'section-head' }, h('h2', { text: 'Güçlü ve zayıf alanlar' })),
-        h('div', { class: 'panel stack' },
-          h('div', {}, h('b', { text: 'Güçlü olduğu dersler' }), h('p', { class: 'muted', text: strong.length ? strong.map((r) => r.subject).join(', ') : 'Henüz %75’in üzerinde ortalaması olan ders yok.' })),
-          h('div', {}, h('b', { text: 'Tekrar önerileri' }), weak.length ? h('ul', { css: { margin: '4px 0 0', 'padding-left': '20px' } }, weak.map((w) => h('li', { text: w.topic + ' (' + w.subject + ', %' + w.avg + ')' }))) : h('p', { class: 'muted', text: 'Şu an tekrar gerektiren konu görünmüyor.' }))),
-        h('div', { class: 'section-head' }, h('h2', { text: 'Çalışma geçmişi' })),
-        h('div', { class: 'hist' }, [...real].reverse().slice(0, 20).map((s) => { const st = sessionStats(s); return h('div', { class: 'hist-item' }, h('div', {}, h('b', { text: s.title }), h('div', { class: 'xs muted', text: fmtDateTime(s.createdAt) + ', ' + s.subject + ', ' + st.answered + '/' + st.total + ' soru, ' + fmtMin(s.activeMs) })), h('span', { class: 'score-pill chip ' + (st.avg === null ? '' : scoreClass(st.avg)), text: st.avg === null ? '–' : '%' + st.avg })); })),
-        h('div', { class: 'btn-row', css: { 'margin-top': '18px' } },
-          h('button', { class: 'btn btn-primary', type: 'button', on: { click: shareReport } }, icon('share'), 'Raporu paylaş'))),
+      pairingPanel(),
+      h('div', { class: 'section-head' }, h('h2', { text: 'Bu cihazdaki rapor' })),
+      notice('Öğrencinin yazdığı cevap metinleri gizlilik için gösterilmez.', 'info'),
+      h('div', { css: { 'margin-top': '12px' } }, renderSummary(buildSummary())),
       h('div', { class: 'section-head' }, h('h2', { text: 'Güvenlik' })),
       h('div', { class: 'panel stack' },
-        h('button', { class: 'btn btn-secondary btn-block', type: 'button', text: 'PIN’i değiştir', on: { click: async () => { if (await confirmBox('PIN değiştirilsin mi?', 'Mevcut PIN silinecek ve yeni bir PIN oluşturacaksın.', 'Değiştir')) { S.parent = null; save(true); parentUnlocked = false; render(); } } } }),
-        h('p', { class: 'xs muted', text: 'Uzaktan takip, ikinci cihaz ve veli hesabı için sunucu ve üyelik altyapısı gerekir; bu sürümde yoktur.' })));
+        h('button', { class: 'btn btn-secondary btn-block', type: 'button', text: 'PIN’i değiştir', on: { click: async () => { if (await confirmBox('PIN değiştirilsin mi?', 'Mevcut PIN silinecek ve yeni bir PIN oluşturacaksın.', 'Değiştir')) { S.parent = null; save(true); parentUnlocked = false; render(); } } } })));
     return box;
   }
 
-  async function shareReport() {
-    const text = parentSummaryText();
+  // ======================================================================
+  // Özet: öğrencinin ilerlemesi (cevap metni içermez) — yerel rapor ve bulut için ortak
+  // ======================================================================
+  function buildSummary() {
+    const real = realSessions();
+    const t = totals(real);
+    const days = {};
+    for (let i = 0; i < 35; i++) { const d = new Date(); d.setDate(d.getDate() - i); const k = dayKey(d); if (S.days[k]) days[k] = Math.round(S.days[k]); }
+    return sanitizeSummary({
+      name: S.settings.name, updatedAt: Date.now(),
+      totals: { answered: t.answered, avg: t.avg, ms: t.ms }, streak: streak(), days,
+      subjects: bySubject(real).slice(0, 16), weak: weakTopics(real),
+      sessions: real.slice(-30).reverse().map((s) => { const st = sessionStats(s); return { title: s.title, subject: s.subject, grade: s.grade, at: s.createdAt, answered: st.answered, total: st.total, avg: st.avg, ms: s.activeMs }; }),
+      materials: MATS.length
+    });
+  }
+
+  function weekMs(days) { let ms = 0; for (let i = 0; i < 7; i++) { const d = new Date(); d.setDate(d.getDate() - i); ms += days[dayKey(d)] || 0; } return ms; }
+  const ago = (t) => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'az önce' : m < 60 ? m + ' dk önce' : m < 1440 ? Math.round(m / 60) + ' sa önce' : fmtDateTime(t); };
+
+  function renderSummary(sum, opts) {
+    opts = opts || {};
+    const box = h('div', {});
+    if (!sum || (!sum.totals.answered && !sum.sessions.length)) {
+      box.append(h('div', { class: 'empty' }, h('b', { text: 'Henüz rapor oluşacak çalışma yok' }), h('p', { text: opts.cloud ? 'Çocuğun kendi materyaliyle çalıştıkça ders, süre ve başarı bilgileri burada otomatik görünür.' : 'Kendi materyalinle çalıştıkça burada ders, süre ve başarı bilgileri görünür. Demo çalışmalar sayılmaz.' })));
+      return box;
+    }
+    const strong = sum.subjects.filter((r) => r.avg >= 75);
+    box.append(
+      h('div', { class: 'stats' },
+        h('div', { class: 'stat' }, h('b', { text: fmtMin(weekMs(sum.days)) }), h('span', { text: 'son 7 gün çalışma' })),
+        h('div', { class: 'stat' }, h('b', { text: fmtNum(sum.totals.answered) }), h('span', { text: 'tamamlanan soru' })),
+        h('div', { class: 'stat' }, h('b', { text: sum.totals.avg === null ? '–' : '%' + sum.totals.avg }), h('span', { text: 'genel başarı' })),
+        h('div', { class: 'stat' }, h('b', { text: sum.streak + ' gün' }), h('span', { text: 'kesintisiz çalışma' }))),
+      h('div', { class: 'section-head' }, h('h2', { text: 'Çalıştığı günler' })),
+      h('div', { class: 'panel' }, weekStrip(sum.days)),
+      h('div', { class: 'section-head' }, h('h2', { text: 'Başarı eğilimi' })),
+      h('div', { class: 'panel' }, trendSvg(sum.sessions.slice().reverse().map((x) => x.avg))),
+      h('div', { class: 'section-head' }, h('h2', { text: 'Derslere göre başarı' })),
+      h('div', { class: 'panel' }, barsFromRows(sum.subjects)),
+      h('div', { class: 'section-head' }, h('h2', { text: 'Güçlü ve zayıf alanlar' })),
+      h('div', { class: 'panel stack' },
+        h('div', {}, h('b', { text: 'Güçlü olduğu dersler' }), h('p', { class: 'muted', text: strong.length ? strong.map((r) => r.subject).join(', ') : 'Henüz %75’in üzerinde ortalaması olan ders yok.' })),
+        h('div', {}, h('b', { text: 'Tekrar önerileri' }), sum.weak.length ? h('ul', { css: { margin: '4px 0 0', 'padding-left': '20px' } }, sum.weak.map((w) => h('li', { text: w.topic + ' (' + w.subject + ', %' + w.avg + ')' }))) : h('p', { class: 'muted', text: 'Şu an tekrar gerektiren konu görünmüyor.' }))),
+      h('div', { class: 'section-head' }, h('h2', { text: 'Çalışma geçmişi' })),
+      h('div', { class: 'hist' }, sum.sessions.slice(0, 25).map((x) => h('div', { class: 'hist-item' },
+        h('div', {}, h('b', { text: x.title }), h('div', { class: 'xs muted', text: fmtDateTime(x.at) + ', ' + x.subject + ', ' + x.answered + '/' + x.total + ' soru, ' + fmtMin(x.ms) })),
+        h('span', { class: 'score-pill chip ' + (x.avg === null ? '' : scoreClass(x.avg)), text: x.avg === null ? '–' : '%' + x.avg })))),
+      h('div', { class: 'btn-row', css: { 'margin-top': '18px' } },
+        h('button', { class: 'btn btn-primary', type: 'button', on: { click: () => shareText(summaryText(sum), 'Sınav Hocası raporu') } }, icon('share'), 'Raporu paylaş')));
+    return box;
+  }
+
+  function summaryText(sum) {
+    const lines = ['📊 Sınav Hocası çalışma raporu (' + new Date().toLocaleDateString('tr-TR') + ')' + (sum.name ? ' – ' + sum.name : '')];
+    lines.push('Son 7 gün: ' + fmtMin(weekMs(sum.days)) + ' çalışma, toplam ' + sum.totals.answered + ' soru, ortalama ' + (sum.totals.avg === null ? '-' : '%' + sum.totals.avg));
+    const last = sum.sessions[0];
+    if (last) lines.push('Son çalışma: ' + fmtDateTime(last.at) + ' – ' + last.title + ' (' + last.subject + ')');
+    sum.subjects.forEach((r) => lines.push('• ' + r.subject + ': %' + r.avg + ' (' + r.n + ' soru)'));
+    if (sum.weak.length) lines.push('Tekrar önerisi: ' + sum.weak.map((w) => w.topic).join(', '));
+    return lines.join('\n');
+  }
+
+  // ======================================================================
+  // Paylaşım: uygulama, soru (görsel kart + çözme bağlantısı), sonuç
+  // ======================================================================
+  async function shareText(text, title) {
     if (Native.has && Native.share(text)) return;
-    if (navigator.share) { try { await navigator.share({ title: 'Sınav Hocası raporu', text }); return; } catch (e) { if (e && e.name === 'AbortError') return; } }
-    try { await navigator.clipboard.writeText(text); toast('Rapor panoya kopyalandı.'); } catch (e) { toast('Paylaşma bu cihazda desteklenmiyor.', true); }
+    if (navigator.share) { try { await navigator.share({ title: title || 'Sınav Hocası', text }); return; } catch (e) { if (e && e.name === 'AbortError') return; } }
+    try { await navigator.clipboard.writeText(text); toast('Panoya kopyalandı; istediğin gruba yapıştırabilirsin.'); } catch (e) { toast('Paylaşma bu cihazda desteklenmiyor.', true); }
+  }
+  async function shareWithImage(canvas, text, title) {
+    try {
+      const b64 = canvas.toDataURL('image/png').split(',')[1];
+      if (Native.has && Native.shareImage(b64, text)) return;
+      if (navigator.canShare) {
+        const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+        const file = new File([blob], 'sinav-hocasi.png', { type: 'image/png' });
+        if (navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], text, title }); return; } catch (e) { if (e && e.name === 'AbortError') return; } }
+      }
+    } catch (e) { /* metinle devam */ }
+    shareText(text, title);
+  }
+
+  function appInviteText() {
+    return 'Ders çalışırken Sınav Hocası’nı kullanıyorum 🦉 Kitabın sayfasını çekiyorsun, senin kitabından soru soruyor ve cevabını değerlendiriyor. Ücretsiz, sen de dene: ' + DOWNLOAD_URL;
+  }
+  function shareApp() { shareText(appInviteText(), 'Sınav Hocası'); }
+
+  function b64urlEncode(str) {
+    const bytes = new TextEncoder().encode(str);
+    let bin = '';
+    bytes.forEach((b) => { bin += String.fromCharCode(b); });
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function questionLink(s, q) {
+    const data = { v: 1, q: clampStr(q.q, 500), r: clampStr(q.ref, 900), k: q.keys.slice(0, 6), e: q.exact || '', s: s.subject, g: s.grade, t: clampStr(s.title, 60) };
+    return SITE + 'soru.html#' + b64urlEncode(JSON.stringify(data));
+  }
+
+  const imgCache = {};
+  function loadImg(src) {
+    if (!imgCache[src]) imgCache[src] = new Promise((res) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = src; });
+    return imgCache[src];
+  }
+  function wrapLines(ctx, text, maxW, maxLines) {
+    const words = String(text).split(/\s+/);
+    const lines = [];
+    let line = '';
+    words.forEach((w) => {
+      const test = line ? line + ' ' + w : w;
+      if (ctx.measureText(test).width > maxW && line) { lines.push(line); line = w; } else line = test;
+    });
+    if (line) lines.push(line);
+    if (lines.length > maxLines) { lines.length = maxLines; lines[maxLines - 1] = lines[maxLines - 1].replace(/\s*\S*$/, '') + '…'; }
+    return lines;
+  }
+  async function cardCanvas(kicker, mainText, footer) {
+    const W = 1080, H = 1350;
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const x = c.getContext('2d');
+    const g = x.createLinearGradient(0, 0, W, H); g.addColorStop(0, '#0a1a3a'); g.addColorStop(1, '#040918');
+    x.fillStyle = g; x.fillRect(0, 0, W, H);
+    const glow = x.createRadialGradient(W * 0.8, 180, 10, W * 0.8, 180, 520); glow.addColorStop(0, 'rgba(54,194,241,.35)'); glow.addColorStop(1, 'rgba(54,194,241,0)');
+    x.fillStyle = glow; x.fillRect(0, 0, W, H);
+    const logo = await loadImg('icons/mark-144.png');
+    if (logo) x.drawImage(logo, 80, 80, 120, 120);
+    const font = '"Roboto", "Segoe UI", system-ui, sans-serif';
+    x.fillStyle = '#ffffff'; x.font = '800 60px ' + font; x.fillText('Sınav', 226, 158);
+    const sw = x.measureText('Sınav ').width; x.fillStyle = '#4cc3f0'; x.fillText('Hocası', 226 + sw, 158);
+    x.fillStyle = '#f2b24c'; x.font = '700 40px ' + font; x.fillText(kicker, 80, 330);
+    // kâğıt
+    x.fillStyle = '#fffefb'; const px = 60, py = 380, pw = W - 120, ph = 700;
+    x.beginPath(); if (x.roundRect) x.roundRect(px, py, pw, ph, 36); else x.rect(px, py, pw, ph); x.fill();
+    x.fillStyle = '#f2b8b8'; x.fillRect(px + 52, py, 4, ph);
+    x.fillStyle = '#0c1a35'; x.font = '600 52px ' + font;
+    const lines = wrapLines(x, mainText, pw - 140, 9);
+    lines.forEach((l, i) => x.fillText(l, px + 90, py + 110 + i * 70));
+    x.fillStyle = '#e9f1ff'; x.font = '700 44px ' + font; x.fillText(footer, 80, 1180);
+    x.fillStyle = '#4cc3f0'; x.font = '600 36px ' + font; x.fillText(SITE.replace('https://', ''), 80, 1250);
+    return c;
+  }
+
+  async function shareQuestion(s, q) {
+    const link = questionLink(s, q);
+    const text = '📚 ' + s.subject + (s.grade !== 'Diğer' ? ' (' + s.grade + '. sınıf)' : '') + ' sorusu:\n' + q.q + '\n\nSen de çöz, cevabını Hoca değerlendirsin 👉 ' + link;
+    try { const c = await cardCanvas(s.subject + ' sorusu', q.q, 'Sen de çöz, cevabını Hoca değerlendirsin!'); await shareWithImage(c, text, 'Sınav Hocası sorusu'); }
+    catch (e) { shareText(text, 'Sınav Hocası sorusu'); }
+  }
+
+  async function shareResult(s) {
+    const st = sessionStats(s);
+    const text = '🎯 “' + s.title + '” konusunda ' + st.answered + ' soru çözdüm, başarım %' + (st.avg || 0) + '! Sınav Hocası kendi kitabımdan soru soruyor. Sen de dene: ' + DOWNLOAD_URL;
+    try { const c = await cardCanvas('Çalışma sonucum', s.title + ' konusunda ' + st.answered + ' soru çözdüm. Başarım: %' + (st.avg || 0), 'Kendi kitabından soru çöz, sen de dene!'); await shareWithImage(c, text, 'Sınav Hocası sonucu'); }
+    catch (e) { shareText(text); }
+  }
+
+  function shareAppCard() {
+    return h('button', { class: 'share-card', type: 'button', on: { click: shareApp } },
+      h('span', { class: 'ic' }, icon('share')),
+      h('span', {}, h('b', { css: { display: 'block' }, text: 'Arkadaşlarınla birlikte çalış' }), h('span', { class: 'small muted', text: 'Sınıf ya da veli grubuna Sınav Hocası’nı öner; soruları birbirinize gönderin.' })));
+  }
+
+  // ======================================================================
+  // Bulut eşitleme — öğrenci cihazı özetini yükler
+  // ======================================================================
+  const Sync = {
+    timer: 0,
+    schedule(delay) {
+      if (!S.sync || S.settings.role !== 'ogrenci') return;
+      clearTimeout(this.timer);
+      this.timer = setTimeout(() => this.push(), delay == null ? 6000 : delay);
+    },
+    async push(force) {
+      if (!S.sync || S.settings.role !== 'ogrenci') return false;
+      const sum = buildSummary();
+      const sig = sha256Hex(JSON.stringify(Object.assign({}, sum, { updatedAt: 0 }))).slice(0, 24);
+      if (!force && sig === S.sync.lastHash) return true;
+      try {
+        await Server.sync('yukle', { familyId: S.sync.familyId, token: S.sync.token, summary: sum });
+        S.sync.lastHash = sig; S.sync.lastPush = Date.now(); S.sync.error = '';
+        save();
+        return true;
+      } catch (e) {
+        if (e.status === 401 || e.status === 404) { S.sync = null; toast('Veli bağlantısı kaldırılmış.', true); }
+        else if (S.sync) S.sync.error = navigator.onLine ? e.message : 'İnternet yok';
+        save();
+        return false;
+      }
+    }
+  };
+
+  function syncUnavailable() {
+    return notice(Server.status === 'cevrimdisi' ? 'İnternet bağlantısı yok. Bağlanınca tekrar dene.' : 'Bulut eşitleme sunucusu şu an kullanılamıyor. Sunucu kurulunca bu özellik çalışır.');
+  }
+
+  // Öğrenci cihazında (PIN arkasında): veli telefonunu bağlama
+  function pairingPanel() {
+    const panel = h('div', { class: 'panel stack' });
+    const draw = () => {
+      fill(panel, h('div', { class: 'row' }, h('span', { class: 'lock-ic', css: { margin: '0' } }, icon('cloud')), h('div', {}, h('h2', { text: 'Veli telefonu' }), h('p', { class: 'small muted', text: S.sync ? 'Bağlı. İlerleme özeti otomatik gönderiliyor.' : 'Velinin telefonunda ilerlemeyi görmesi için bağla.' }))));
+      if (!S.sync) {
+        const btn = h('button', { class: 'btn btn-primary btn-block', type: 'button' }, icon('link'), 'Veli telefonunu bağla');
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          try {
+            await Server.check();
+            const d = await Server.sync('olustur', {});
+            if (!ID_RE.test(d.familyId || '') || !ID_RE.test(d.token || '') || !/^[A-Z0-9]{6}$/.test(d.code || '')) throw new Error('Sunucu yanıtı geçersiz');
+            S.sync = { familyId: d.familyId, token: d.token, lastPush: 0, lastHash: '', error: '' };
+            save(true);
+            await Sync.push(true);
+            draw(); showCode(d.code);
+          } catch (e) { toast(e.message || 'Bağlantı kurulamadı.', true); btn.disabled = false; }
+        });
+        panel.append(
+          h('ol', { class: 'steps' },
+            h('li', {}, h('div', {}, h('b', { text: 'Bu düğmeye dokun' }), h('p', { class: 'muted small', text: '6 haneli bir kod çıkar.' }))),
+            h('li', {}, h('div', {}, h('b', { text: 'Velinin telefonunda Sınav Hocası’nı aç' }), h('p', { class: 'muted small', text: '“Veliyim”i seç ve kodu yaz.' })))),
+          btn,
+          h('p', { class: 'xs muted', text: 'Gönderilen: çalışma süresi, ders, puan ve konu başlıkları. Cevap metinleri ve kitap sayfaları gönderilmez.' }));
+      } else {
+        panel.append(
+          h('div', { class: 'status-list' },
+            h('div', {}, h('span', { text: 'Son gönderim' }), h('span', { class: 'chip ' + (S.sync.error ? 'warn' : 'ok'), text: S.sync.lastPush ? ago(S.sync.lastPush) : 'Bekliyor' })),
+            S.sync.error ? h('div', {}, h('span', { class: 'small muted', text: S.sync.error }), h('button', { class: 'btn btn-sm btn-soft', type: 'button', text: 'Şimdi gönder', on: { click: async () => { if (await Sync.push(true)) toast('Gönderildi.'); draw(); } } })) : null),
+          h('div', { class: 'btn-row' },
+            h('button', { class: 'btn btn-secondary', type: 'button', on: { click: async () => { try { const d = await Server.sync('kod', { familyId: S.sync.familyId, token: S.sync.token }); showCode(d.code); } catch (e) { toast(e.message, true); } } } }, icon('link'), 'Başka veli ekle'),
+            h('button', { class: 'btn btn-secondary', type: 'button', on: { click: listParents } }, icon('users'), 'Bağlı veliler')),
+          h('button', { class: 'btn btn-danger btn-block', type: 'button', on: { click: async () => {
+            if (!(await confirmBox('Bağlantı kaldırılsın mı?', 'Bütün veli telefonlarının bağlantısı kesilir ve buluttaki ilerleme özeti silinir.', 'Kaldır', true))) return;
+            try { await Server.sync('ayril', { familyId: S.sync.familyId, token: S.sync.token }); } catch (e) { if (e.status !== 401 && e.status !== 404) { toast(e.message, true); return; } }
+            S.sync = null; save(true); toast('Veli bağlantısı kaldırıldı.'); draw();
+          } } }, 'Bağlantıyı kaldır'));
+      }
+    };
+    draw();
+    return panel;
+  }
+
+  function showCode(code) {
+    openSheet('Veli bağlantı kodu', (b) => {
+      b.append(
+        h('p', { class: 'muted', text: 'Velinin telefonunda Sınav Hocası’nı aç, “Veliyim”i seç ve bu kodu yaz. Kod 10 dakika geçerli ve tek kullanımlık.' }),
+        h('div', { class: 'code-show', 'aria-label': 'Kod: ' + code.split('').join(' '), text: code.slice(0, 3) + ' ' + code.slice(3) }),
+        h('button', { class: 'btn btn-secondary btn-block', type: 'button', on: { click: () => shareText('Sınav Hocası veli bağlantı kodum: ' + code + '\nUygulamayı aç → Veliyim → kodu yaz. (10 dakika geçerli)\nUygulama yoksa: ' + DOWNLOAD_URL, 'Veli kodu') } }, icon('share'), 'Kodu veliye gönder'));
+    });
+  }
+
+  async function listParents() {
+    try {
+      const d = await Server.sync('veliler', { familyId: S.sync.familyId, token: S.sync.token });
+      const list = Array.isArray(d.parents) ? d.parents.slice(0, 6) : [];
+      openSheet('Bağlı veliler', (b, close) => {
+        if (!list.length) { b.append(h('p', { class: 'muted', text: 'Henüz bağlanan veli yok. Kodu veliye gönder.' })); return; }
+        list.forEach((p, i) => b.append(h('div', { class: 'hist-item' },
+          h('div', {}, h('b', { text: (i + 1) + '. veli telefonu' }), h('div', { class: 'xs muted', text: 'Bağlandı: ' + fmtDateTime(Number(p.at) || 0) })),
+          h('button', { class: 'btn btn-sm btn-danger', type: 'button', text: 'Çıkar', on: { click: async () => {
+            try { await Server.sync('veli-sil', { familyId: S.sync.familyId, token: S.sync.token, parentId: clampStr(p.id, 40) }); toast('Veli çıkarıldı.'); close(); } catch (e) { toast(e.message, true); }
+          } } }))));
+      });
+    } catch (e) { toast(e.message, true); }
+  }
+
+  // ======================================================================
+  // VELİ MODU — buluttan gelen ilerleme
+  // ======================================================================
+  let activeKid = 0;
+  async function fetchKid(kid) {
+    try {
+      const d = await Server.sync('oku', { familyId: kid.familyId, token: kid.token });
+      kid.sum = sanitizeSummary(d.summary);
+      if (kid.sum && kid.sum.name) kid.name = kid.sum.name;
+      kid.fetchedAt = Date.now(); kid.revoked = false; kid.error = '';
+      save();
+    } catch (e) {
+      if (e.status === 401 || e.status === 404) kid.revoked = true;
+      kid.error = navigator.onLine ? e.message : 'İnternet yok';
+    }
+  }
+
+  function viewKidSummary() {
+    if (!S.children.length) return viewPairParent();
+    activeKid = Math.min(activeKid, S.children.length - 1);
+    const kid = S.children[activeKid];
+    const wrap = h('div', {});
+    const draw = () => {
+      const line = h('div', { class: 'sync-line' },
+        h('span', { text: kid.revoked ? 'Bağlantı kaldırılmış' : kid.sum && kid.sum.updatedAt ? 'Son güncelleme: ' + ago(kid.sum.updatedAt) : 'Henüz veri gelmedi' }),
+        h('button', { class: 'btn btn-sm btn-soft', type: 'button', on: { click: async (e) => { e.currentTarget.disabled = true; await fetchKid(kid); draw(); } } }, icon('refresh'), 'Yenile'));
+      fill(wrap, 
+        h('div', { class: 'row spread', css: { margin: '8px 0 12px' } }, h('h1', { text: kid.name ? kid.name : 'Çocuğumun ilerlemesi' })),
+        S.children.length > 1 ? h('div', { class: 'kids', role: 'group', 'aria-label': 'Çocuk seç' }, S.children.map((k, i) => h('button', { type: 'button', 'aria-pressed': String(i === activeKid), text: k.name || (i + 1) + '. çocuk', on: { click: () => { activeKid = i; render(); } } }))) : null,
+        line,
+        kid.revoked ? notice('Öğrenci telefonundan bağlantı kaldırılmış. “Çocuklarım” bölümünden yeni kodla tekrar bağlanabilirsin.') : null,
+        kid.error && !kid.revoked ? notice(kid.error) : null,
+        renderSummary(kid.sum, { cloud: true }));
+    };
+    draw();
+    if (!kid.revoked && Date.now() - kid.fetchedAt > 20000) fetchKid(kid).then(() => { if (route().name === 'vozet' || !location.hash) draw(); });
+    pollTimer = setInterval(() => { if (!document.hidden && !kid.revoked) fetchKid(kid).then(draw); }, 60000);
+    return wrap;
+  }
+
+  function codeInput(onDone) {
+    const input = h('input', { type: 'text', class: 'code-in', inputmode: 'text', autocomplete: 'one-time-code', autocapitalize: 'characters', spellcheck: 'false', maxlength: 7, placeholder: 'ABC123', 'aria-label': '6 haneli bağlantı kodu' });
+    const btn = h('button', { class: 'btn btn-primary btn-block', type: 'button', disabled: true }, icon('link'), 'Bağlan');
+    input.addEventListener('input', () => { const v = input.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6); input.value = v; btn.disabled = v.length !== 6; });
+    btn.addEventListener('click', async () => {
+      const code = input.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (code.length !== 6) return;
+      btn.disabled = true;
+      try {
+        await Server.check();
+        const d = await Server.sync('katil', { code });
+        if (!ID_RE.test(d.familyId || '') || !ID_RE.test(d.token || '')) throw new Error('Sunucu yanıtı geçersiz');
+        if (S.children.some((k) => k.familyId === d.familyId)) { toast('Bu çocuk zaten ekli.'); onDone(); return; }
+        const kid = { familyId: d.familyId, token: d.token, name: clampStr(d.name, 30), addedAt: Date.now(), fetchedAt: 0, revoked: false, sum: null };
+        S.children.push(kid); activeKid = S.children.length - 1;
+        save(true);
+        await fetchKid(kid);
+        toast('Bağlandı. İlerleme artık buraya gelecek.');
+        onDone();
+      } catch (e) { toast(e.status === 404 ? 'Kod bulunamadı ya da süresi doldu. Çocuğun telefonundan yeni kod al.' : (e.message || 'Bağlanamadı.'), true); btn.disabled = false; }
+    });
+    return [input, btn];
+  }
+
+  function viewPairParent() {
+    const [input, btn] = codeInput(() => go('vozet'));
+    return h('div', {},
+      h('section', { class: 'hoca' },
+        h('div', { class: 'hoca-face' }, h('img', { src: 'icons/mark-144.png', alt: '', width: 76, height: 76 })),
+        h('div', { class: 'bubble' }, h('h1', { text: 'Çocuğunu bağla' }), h('p', { text: 'Bağlandığında çocuğunun çalışma süresi, çözdüğü sorular ve başarısı buraya otomatik gelir.' }))),
+      h('div', { class: 'panel stack', css: { 'margin-top': '16px' } },
+        h('ol', { class: 'steps' },
+          h('li', {}, h('div', {}, h('b', { text: 'Çocuğunun telefonunda Sınav Hocası’nı aç' }), h('p', { class: 'muted small', text: '“Veli” sekmesine gir, veli PIN’ini oluştur ya da gir.' }))),
+          h('li', {}, h('div', {}, h('b', { text: '“Veli telefonunu bağla”ya dokun' }), h('p', { class: 'muted small', text: 'Ekranda 6 haneli bir kod çıkar.' }))),
+          h('li', {}, h('div', {}, h('b', { text: 'Kodu buraya yaz' }), h('p', { class: 'muted small', text: 'Kod 10 dakika geçerli ve tek kullanımlık.' })))),
+        input, btn),
+      !Server.canSync && Server.status !== 'bilinmiyor' ? h('div', { css: { 'margin-top': '12px' } }, syncUnavailable()) : null,
+      h('p', { class: 'xs muted', css: { 'margin-top': '14px' }, text: 'Çocuğun cevap metinleri ve kitap sayfaları velilere gönderilmez; yalnızca süre, ders, puan ve konu başlıkları paylaşılır.' }));
+  }
+
+  function viewKids() {
+    return h('div', {},
+      h('h1', { text: 'Çocuklarım', css: { margin: '8px 0 14px' } }),
+      S.children.length ? h('div', { class: 'hist' }, S.children.map((k, i) => h('div', { class: 'hist-item' },
+        h('div', {}, h('b', { text: k.name || (i + 1) + '. çocuk' }), h('div', { class: 'xs muted', text: k.revoked ? 'Bağlantı kaldırılmış' : k.sum && k.sum.updatedAt ? 'Son güncelleme: ' + ago(k.sum.updatedAt) : 'Henüz veri yok' })),
+        h('button', { class: 'btn btn-sm btn-ghost', type: 'button', 'aria-label': (k.name || 'Çocuk') + ' bağlantısını kaldır', on: { click: async () => {
+          if (!(await confirmBox('Bu çocuk listeden çıkarılsın mı?', 'Bu telefon artık onun ilerlemesini görmez. İstersen yeni kodla tekrar bağlanabilirsin.', 'Çıkar', true))) return;
+          try { await Server.sync('ayril', { familyId: k.familyId, token: k.token }); } catch (e) { /* bağlantı zaten yoksa da listeden çıkar */ }
+          S.children.splice(i, 1); activeKid = 0; save(true); render();
+        } } }, icon('trash'))))) : h('div', { class: 'empty' }, h('b', { text: 'Henüz bağlı çocuk yok' }), h('p', { text: 'Aşağıdan kodla ekle.' })),
+      h('div', { class: 'section-head' }, h('h2', { text: 'Çocuk ekle' })),
+      h('div', { class: 'panel stack' }, h('p', { class: 'small muted', text: 'Çocuğunun telefonunda Veli sekmesi → “Veli telefonunu bağla” (ya da “Başka veli ekle”) ile çıkan kodu yaz.' }), ...codeInput(() => go('vozet'))));
+  }
+
+  function viewShareHub() {
+    return h('div', { class: 'stack' },
+      h('h1', { text: 'Paylaş', css: { margin: '8px 0 6px' } }),
+      h('p', { class: 'muted', text: 'Sınıf veli grubunda ve arkadaşlarınızla paylaşın; çocuklar birlikte ders çalışma alışkanlığı kazansın.' }),
+      shareAppCard(),
+      S.children.length && S.children[activeKid] && S.children[activeKid].sum ? h('button', { class: 'btn btn-secondary btn-block', type: 'button', on: { click: () => shareText(summaryText(S.children[activeKid].sum), 'Sınav Hocası raporu') } }, icon('share'), 'Çocuğumun raporunu paylaş') : null);
+  }
+
+  // ======================================================================
+  // İlk açılış: tanıtım ve rol seçimi
+  // ======================================================================
+  const SLIDES = [
+    { art: 'logo', title: 'Sınav Hocası’na hoş geldin', text: 'Ders kitabındaki konudan sana özel sorular hazırlayan, cevabını değerlendiren çalışma arkadaşın.' },
+    { art: 'camera', badge: 'book', title: 'Kitabını göster', text: 'Sayfanın fotoğrafını çek, PDF ekle ya da güncel MEB ders kitabını uygulamanın içine indir.' },
+    { art: 'edit', badge: 'check', title: 'Kendi cümlelerinle cevapla', text: 'Hoca cevabını anlamına göre puanlar; neyi doğru yaptığını ve neyi geliştirebileceğini söyler.' },
+    { art: 'users', badge: 'cloud', title: 'Velin ilerlemeni görsün', text: 'Uygulamayı velinin telefonuna da kur, bağla. Çalışma süren ve başarın onun ekranına otomatik gelir.' },
+    { art: 'share', badge: 'target', title: 'Birlikte çalışın', text: 'Soruları sınıf grubunda paylaş, arkadaşların da çözsün. Birlikte çalışmak daha keyifli.' }
+  ];
+  let slideIdx = 0;
+  function viewIntro() {
+    const wrap = h('div', { class: 'intro' });
+    const draw = () => {
+      const sl = SLIDES[slideIdx];
+      const last = slideIdx === SLIDES.length - 1;
+      const art = sl.art === 'logo'
+        ? h('div', { class: 'slide-art' }, h('img', { src: 'icons/mark-144.png', alt: 'Sınav Hocası baykuşu' }))
+        : h('div', { class: 'slide-art' }, h('div', { class: 'big' }, icon(sl.art)), sl.badge ? h('div', { class: 'badge' }, icon(sl.badge)) : null);
+      const slide = h('div', { class: 'slide', 'aria-live': 'polite' }, art, h('h1', { text: sl.title }), h('p', { text: sl.text }));
+      let sx = null;
+      slide.addEventListener('pointerdown', (e) => { sx = e.clientX; });
+      slide.addEventListener('pointerup', (e) => { if (sx === null) return; const dx = e.clientX - sx; sx = null; if (dx < -50 && !last) { slideIdx++; draw(); } else if (dx > 50 && slideIdx > 0) { slideIdx--; draw(); } });
+      fill(wrap, 
+        h('div', { class: 'intro-top' }, h('img', { src: 'icons/mark-144.png', alt: '' }), !last ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', text: 'Geç', on: { click: finishIntro } }) : h('span', {})),
+        slide,
+        h('div', { class: 'dots', 'aria-hidden': 'true' }, SLIDES.map((_, i) => h('i', { class: i === slideIdx ? 'on' : '' }))),
+        h('div', { class: 'btn-row' },
+          slideIdx > 0 ? h('button', { class: 'btn btn-secondary', type: 'button', 'aria-label': 'Önceki', on: { click: () => { slideIdx--; draw(); } } }, icon('left')) : null,
+          h('button', { class: 'btn btn-primary', type: 'button', css: { flex: '3 1 200px' }, on: { click: () => { if (last) finishIntro(); else { slideIdx++; draw(); } } } }, last ? 'Başlayalım' : 'Devam', icon('right'))));
+    };
+    draw();
+    return wrap;
+  }
+  function finishIntro() { S.settings.introDone = true; slideIdx = 0; save(true); render(); window.scrollTo(0, 0); }
+
+  function viewRole() {
+    const pickRole = (r) => {
+      S.settings.role = r; save(true);
+      if (r === 'ogrenci') Sync.schedule(1000);
+      go(r === 'veli' ? 'vozet' : 'ana');
+    };
+    return h('div', { class: 'intro' },
+      h('div', { class: 'intro-top' }, h('img', { src: 'icons/mark-144.png', alt: '' }), h('span', {})),
+      h('div', { css: { margin: 'auto 0' } },
+        h('h1', { text: 'Bu telefonu kim kullanacak?' }),
+        h('p', { class: 'muted', css: { 'margin-top': '8px' }, text: 'Tek uygulama, iki kullanım. İstediğin zaman Ayarlar’dan değiştirebilirsin.' }),
+        h('div', { class: 'role-cards' },
+          h('button', { class: 'role-card', type: 'button', on: { click: () => pickRole('ogrenci') } }, h('span', { class: 'ic' }, icon('student')), h('span', {}, h('b', { text: 'Öğrenciyim' }), h('small', { text: 'Kitabımdan soru çözeceğim, ilerlememi takip edeceğim.' })), icon('right')),
+          h('button', { class: 'role-card', type: 'button', on: { click: () => pickRole('veli') } }, h('span', { class: 'ic' }, icon('parent')), h('span', {}, h('b', { text: 'Veliyim' }), h('small', { text: 'Çocuğumun çalışmasını kendi telefonumdan göreceğim.' })), icon('right')))));
   }
 
   // ======================================================================
@@ -1654,6 +2113,12 @@
       const ocrAuto = h('input', { type: 'checkbox', role: 'switch', checked: S.settings.autoOcr, on: { change: (e) => { S.settings.autoOcr = e.target.checked; save(); } } });
       const chip = (ok, okT, noT) => h('span', { class: 'chip ' + (ok ? 'ok' : 'warn'), text: ok ? okT : noT });
       b.append(
+        h('div', { class: 'field' }, h('span', { text: 'Bu telefonu kim kullanıyor?' }), seg([['ogrenci', 'Öğrenci'], ['veli', 'Veli']], S.settings.role || 'ogrenci', async (v) => {
+          if (v === S.settings.role) return;
+          closeSheet();
+          if (!(await confirmBox(v === 'veli' ? 'Veli kullanımına geçilsin mi?' : 'Öğrenci kullanımına geçilsin mi?', v === 'veli' ? 'Ekran, bağlı çocuklarının buluttan gelen ilerlemesini gösterecek. Bu telefondaki çalışmalar silinmez.' : 'Ekran soru çözme uygulamasına dönecek. Bağlı çocukların listede kalır.', 'Geç'))) return;
+          S.settings.role = v; save(true); go(v === 'veli' ? 'vozet' : 'ana');
+        }, 'Kullanım')),
         h('div', { class: 'field' }, h('span', { text: 'Görünüm' }), seg([['auto', 'Otomatik'], ['light', 'Açık'], ['dark', 'Koyu']], S.settings.theme, (v) => { S.settings.theme = v; save(); applyTheme(); }, 'Tema')),
         h('div', { class: 'field' }, h('span', { text: 'Yazı boyutu' }), seg([['normal', 'Normal'], ['large', 'Büyük']], S.settings.textSize, (v) => { S.settings.textSize = v; save(); applyTheme(); }, 'Yazı boyutu')),
         h('label', { class: 'field' }, h('span', { text: 'Öğrencinin adı' }), nameIn, h('span', { class: 'hint', text: 'Yalnızca selamlamada kullanılır, cihazdan çıkmaz.' })),
@@ -1668,7 +2133,8 @@
           h('div', {}, h('span', { text: 'Soru üretme ve değerlendirme' }), chip(true, 'Cihazda çalışır', '')),
           h('div', {}, h('span', { text: 'Yapay zekâ sunucusu' }), aiChip()),
           h('div', {}, h('span', { text: 'MEB kitabını uygulama içine indirme' }), chip(Native.can('books'), 'Çalışır', 'Android uygulamasında')),
-          h('div', {}, h('span', { text: 'Veli hesabı ve bulut eşitleme' }), h('span', { class: 'chip', text: 'Henüz yok' }))),
+          h('div', {}, h('span', { text: 'Veli telefonuyla bulut eşitleme' }), chip(Server.canSync, 'Hazır', 'Sunucu bekleniyor'))),
+        h('button', { class: 'btn btn-soft btn-block', type: 'button', css: { 'margin-top': '14px' }, on: { click: shareApp } }, icon('share'), 'Uygulamayı paylaş'),
         h('h2', { text: 'Verilerim', css: { 'margin-top': '22px' } }),
         h('div', { class: 'btn-row' },
           h('button', { class: 'btn btn-secondary', type: 'button', on: { click: exportBackup } }, icon('download'), 'Yedeği indir'),
@@ -1769,7 +2235,7 @@
     bindInputs();
     await loadMaterials();
     render();
-    Server.check().then(() => { if (route().name === 'calis') render(); });
+    Server.check().then(() => { if (['calis', 'vozet', 'vcocuk', 'veli'].includes(route().name) && !sheetOpen) render(); Sync.schedule(2000); });
     probe('vendor/pdfjs/pdf.min.js').then((ok) => { libAvailable.pdf = ok; });
     if ('serviceWorker' in navigator && location.protocol === 'https:' && !Native.has && location.hostname !== 'appassets.androidplatform.net') {
       navigator.serviceWorker.register('sw.js').catch(() => { /* çevrimdışı önbellek isteğe bağlı */ });

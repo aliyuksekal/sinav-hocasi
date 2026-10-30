@@ -413,6 +413,7 @@ public class MainActivity extends Activity {
                 o.put("version", BuildConfig.VERSION_NAME);
                 o.put("ocr", true);
                 o.put("books", true);
+                o.put("shareImage", true);
             } catch (Exception ignored) { }
             return o.toString();
         }
@@ -480,6 +481,34 @@ public class MainActivity extends Activity {
                 i.putExtra(Intent.EXTRA_TEXT, t);
                 try { startActivity(Intent.createChooser(i, "Raporu paylaş")); } catch (Exception e) { toast("Paylaşılamadı."); }
             });
+        }
+
+        @JavascriptInterface
+        public void shareImage(String b64png, String text) {
+            if (!fromOurPage() || b64png == null || b64png.length() > 12 * 1024 * 1024) return;
+            final String t = text == null ? "" : (text.length() > 8000 ? text.substring(0, 8000) : text);
+            new Thread(() -> {
+                try {
+                    byte[] png = Base64.decode(b64png, Base64.DEFAULT);
+                    // Yalnızca PNG imzası taşıyan veri yazılır
+                    if (png.length < 8 || (png[0] & 0xFF) != 0x89 || png[1] != 'P' || png[2] != 'N' || png[3] != 'G') { toast("Görsel hazırlanamadı."); return; }
+                    File dir = new File(getCacheDir(), "share");
+                    //noinspection ResultOfMethodCallIgnored
+                    dir.mkdirs();
+                    File f = new File(dir, "sinav-hocasi.png");
+                    try (java.io.FileOutputStream fo = new java.io.FileOutputStream(f)) { fo.write(png); }
+                    Uri uri = FileProvider.getUriForFile(MainActivity.this, getPackageName() + ".files", f);
+                    ui.post(() -> {
+                        Intent i = new Intent(Intent.ACTION_SEND);
+                        i.setType("image/png");
+                        i.putExtra(Intent.EXTRA_STREAM, uri);
+                        i.putExtra(Intent.EXTRA_TEXT, t);
+                        i.setClipData(ClipData.newRawUri("", uri));
+                        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        try { startActivity(Intent.createChooser(i, "Paylaş")); } catch (Exception e) { toast("Paylaşılamadı."); }
+                    });
+                } catch (Exception e) { toast("Paylaşılamadı."); }
+            }, "sh-share").start();
         }
 
         @JavascriptInterface

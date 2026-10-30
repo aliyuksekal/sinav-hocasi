@@ -416,3 +416,64 @@ select { appearance: none; -webkit-appearance: none; background-image: linear-gr
   .hero-actions { grid-template-columns: 1fr 1fr; }
   .sheet { border-radius: 26px; bottom: 16px; }
 }
+
+/* ---------- 1.1: genel SVG güvenliği, Android kenar boşluğu ---------- */
+:where(svg[viewBox="0 0 24 24"]) { width: 24px; height: 24px; }
+html.native { --safe-t: 0px; --safe-b: 0px; }
+.topbar { padding-top: calc(8px + var(--safe-t)); padding-bottom: 8px; }
+body.no-tabs .tabbar { display: none; }
+body.no-tabs main { padding-bottom: calc(24px + var(--safe-b)); }
+body.no-tabs .topbar { display: none; }
+
+/* PIN ekranı: kilit küçük, tuş takımı ekrana sığar */
+.pin-panel { text-align: center; padding: 14px 16px 16px; }
+.lock-ic { width: 44px; height: 44px; margin: 0 auto; border-radius: 14px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
+.lock-ic svg { width: 22px; height: 22px; }
+.pin-panel h2 { margin-top: 8px; font-size: 1.1rem; }
+.pin { margin: 12px 0 6px; }
+.keypad { gap: 8px; max-width: 300px; }
+.keypad button { min-height: 52px; }
+@media (max-height: 640px) { .keypad button { min-height: 44px; } .lock-ic { display: none; } }
+
+/* ---------- Tanıtım ---------- */
+.intro { min-height: calc(100vh - 32px); min-height: calc(100dvh - 32px); display: flex; flex-direction: column; padding-top: calc(12px + var(--safe-t)); }
+.intro-top { display: flex; justify-content: space-between; align-items: center; }
+.intro-top img { width: 40px; height: 40px; border-radius: 12px; }
+.slide { flex: 1; display: flex; flex-direction: column; justify-content: center; text-align: center; padding: 18px 6px; touch-action: pan-y; }
+.slide-art { width: 200px; height: 200px; margin: 0 auto 26px; position: relative; display: grid; place-items: center; }
+.slide-art::before { content: ""; position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--glow) 32%, transparent), transparent 68%); }
+.slide-art img { width: 150px; height: 150px; border-radius: 40px; position: relative; box-shadow: 0 0 0 1px rgba(54,194,241,.4), 0 18px 50px rgba(11,127,192,.35); }
+.slide-art .big { position: relative; width: 132px; height: 132px; border-radius: 40px; display: grid; place-items: center; background: var(--surface); border: 1px solid var(--line); color: var(--accent); box-shadow: var(--shadow); }
+.slide-art .big svg { width: 62px; height: 62px; stroke-width: 1.6; }
+.slide-art .badge { position: absolute; right: 18px; bottom: 26px; width: 54px; height: 54px; border-radius: 18px; display: grid; place-items: center; background: var(--amber); color: #2a1800; box-shadow: var(--shadow); }
+.slide-art .badge svg { width: 26px; height: 26px; }
+.slide h1 { font-size: 1.65rem; }
+.slide p { margin: 10px auto 0; max-width: 340px; color: var(--ink-2); font-size: 1.02rem; }
+.dots { display: flex; justify-content: center; gap: 8px; margin: 6px 0 18px; }
+.dots i { width: 8px; height: 8px; border-radius: 8px; background: var(--line); transition: width .2s, background .2s; }
+.dots i.on { width: 26px; background: var(--accent); }
+.role-cards { display: grid; gap: 12px; margin-top: 18px; }
+.role-card { display: grid; grid-template-columns: 58px 1fr 20px; gap: 14px; align-items: center; text-align: left; padding: 18px 16px; border-radius: 20px; border: 1.5px solid var(--line); background: var(--surface); min-height: 96px; }
+.role-card:active { border-color: var(--accent); }
+.role-card .ic { width: 58px; height: 58px; border-radius: 18px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
+.role-card .ic svg { width: 30px; height: 30px; }
+.role-card b { font-size: 1.12rem; display: block; }
+.role-card small { color: var(--ink-2); font-size: .88rem; line-height: 1.4; display: block; margin-top: 2px; }
+.role-card > svg { color: var(--ink-3); width: 20px; height: 20px; }
+
+/* ---------- Paylaşım ---------- */
+.share-card { display: grid; grid-template-columns: 48px 1fr; gap: 12px; align-items: center; padding: 14px; border-radius: 18px; background: linear-gradient(120deg, var(--accent-soft), var(--amber-soft)); border: 1px solid var(--line); text-align: left; width: 100%; }
+.share-card .ic { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center; background: var(--surface); color: var(--accent); }
+.share-card .ic svg { width: 24px; height: 24px; }
+.qshare { width: 40px; height: 40px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); display: grid; place-items: center; color: var(--accent); flex: none; }
+.qshare svg { width: 20px; height: 20px; }
+
+/* ---------- Veli bulut ekranı ---------- */
+.kids { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 12px; scrollbar-width: none; }
+.kids button { flex: none; min-height: 40px; padding: 6px 14px; border-radius: 999px; border: 1.5px solid var(--line); background: var(--surface); font-weight: 700; }
+.kids button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.sync-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: .85rem; color: var(--ink-2); margin-bottom: 12px; }
+.code-in { text-align: center; font-size: 1.7rem; font-weight: 800; letter-spacing: .3em; text-transform: uppercase; font-variant-numeric: tabular-nums; }
+.code-show { text-align: center; font-size: 2.2rem; font-weight: 800; letter-spacing: .25em; padding: 14px; border-radius: 16px; background: var(--surface-2); font-variant-numeric: tabular-nums; }
+a.btn { text-decoration: none; }
+.intro .btn-row > .btn-secondary { flex: 0 0 56px; padding: 0; }

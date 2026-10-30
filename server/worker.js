@@ -6,6 +6,7 @@
  *   POST /api/sorular       Materyal metninden soru üretir
  *   POST /api/degerlendir   Öğrencinin cevabını anlamına göre puanlar
  *   POST /api/metin         Fotoğraftaki yazıyı okur
+ *   POST /api/es/...        Öğrenci–veli bulut eşitlemesi (olustur, kod, katil, yukle, oku, veliler, veli-sil, ayril)
  *
  * Güvenlik
  *   - API anahtarı yalnızca Worker gizli değişkeninde (ANTHROPIC_API_KEY) durur; uygulamaya hiç gitmez.
@@ -37,10 +38,12 @@ export default {
     if (!allowed.includes(origin)) return json({ error: 'Bu kaynaktan erişim yok' }, 403);
 
     if (url.pathname === '/api/saglik' && request.method === 'GET') {
-      return json({ ok: Boolean(env.ANTHROPIC_API_KEY), surum: 1 });
+      return json({ ok: true, ai: Boolean(env.ANTHROPIC_API_KEY), sync: Boolean(env.SYNC), surum: 2 });
     }
     if (request.method !== 'POST') return json({ error: 'Yöntem desteklenmiyor' }, 405);
-    if (!env.ANTHROPIC_API_KEY) return json({ error: 'Sunucu yapılandırılmamış' }, 503);
+    const isSync = url.pathname.startsWith('/api/es/');
+    if (isSync && !env.SYNC) return json({ error: 'Bulut eşitleme yapılandırılmamış' }, 503);
+    if (!isSync && !env.ANTHROPIC_API_KEY) return json({ error: 'Sunucu yapılandırılmamış' }, 503);
 
     // Hız sınırı (IP + uç nokta)
     const ip = request.headers.get('CF-Connecting-IP') || '0.0.0.0';
@@ -62,6 +65,7 @@ export default {
     if (!body || typeof body !== 'object') return json({ error: 'Geçersiz istek' }, 400);
 
     try {
+      if (isSync) return json(await sync(url.pathname.slice(8), body, env));
       if (url.pathname === '/api/sorular') return json(await questions(body, env));
       if (url.pathname === '/api/degerlendir') return json(await evaluate(body, env));
       if (url.pathname === '/api/metin') return json(await ocr(body, env));
@@ -217,4 +221,139 @@ async function ocr(b, env) {
     ]
   });
   return { text: str(o.text, 60000) };
+}
+
+// ---------------------------------------------------------------------------
+// Bulut eşitleme
+//   Aile (fam:<id>)  → { s: öğrenci jetonunun SHA-256'sı, p: [{ i, h, t }] veli jetonları, c: oluşturma }
+//   Özet (sum:<id>)  → öğrencinin ilerleme özeti (cevap metni içermez)
+//   Kod  (code:<KOD>)→ aile kimliği, 10 dakika geçerli, tek kullanımlık
+// Jetonlar sunucuda yalnızca özet (hash) olarak tutulur.
+// ---------------------------------------------------------------------------
+const CODE_ALPHA = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const ID_RE = /^[A-Za-z0-9_-]{22,64}$/;
+const SUM_TTL = 60 * 60 * 24 * 365; // bir yıl kullanılmazsa silinir
+
+function rand(n) { const a = new Uint8Array(n); crypto.getRandomValues(a); return a; }
+function b64url(bytes) { let s = ''; bytes.forEach((b) => { s += String.fromCharCode(b); }); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function newCode() { return Array.from(rand(6), (b) => CODE_ALPHA[b % 32]).join(''); }
+async function sha(s) { const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, '0')).join(''); }
+function same(a, b) { if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false; let r = 0; for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i); return r === 0; }
+
+async function family(env, id) {
+  if (!ID_RE.test(id || '')) return null;
+  const raw = await env.SYNC.get('fam:' + id);
+  return raw ? JSON.parse(raw) : null;
+}
+async function auth(env, b) {
+  const fam = await family(env, b.familyId);
+  if (!fam || typeof b.token !== 'string' || !ID_RE.test(b.token)) throw bad('Bağlantı bulunamadı', 404);
+  const h = await sha(b.token);
+  if (same(h, fam.s)) return { fam, role: 'ogrenci' };
+  const p = (fam.p || []).find((x) => same(h, x.h));
+  if (p) return { fam, role: 'veli', parent: p };
+  throw bad('Yetkisiz', 401);
+}
+async function issueCode(env, familyId) {
+  for (let i = 0; i < 5; i++) {
+    const code = newCode();
+    if (!(await env.SYNC.get('code:' + code))) {
+      await env.SYNC.put('code:' + code, familyId, { expirationTtl: 600 });
+      return code;
+    }
+  }
+  throw bad('Kod üretilemedi, tekrar dene', 503);
+}
+
+const num = (v, min, max) => { const n = Number(v); return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.round(n))) : null; };
+function cleanSummary(x) {
+  if (!x || typeof x !== 'object') throw bad('Geçersiz özet');
+  const days = {};
+  if (x.days && typeof x.days === 'object') Object.keys(x.days).filter((k) => /^\d{4}-\d{2}-\d{2}$/.test(k)).slice(-60).forEach((k) => { days[k] = num(x.days[k], 0, 86400000) || 0; });
+  const arr = (a, n) => (Array.isArray(a) ? a.slice(0, n) : []);
+  return {
+    v: 1,
+    name: str(x.name, 30),
+    updatedAt: Date.now(),
+    totals: { answered: num(x.totals && x.totals.answered, 0, 1e6) || 0, avg: num(x.totals && x.totals.avg, 0, 100), ms: num(x.totals && x.totals.ms, 0, 1e11) || 0 },
+    streak: num(x.streak, 0, 3650) || 0,
+    days,
+    subjects: arr(x.subjects, 20).map((r) => ({ subject: str(r.subject, 40), avg: num(r.avg, 0, 100), n: num(r.n, 0, 1e6) || 0 })).filter((r) => r.subject),
+    weak: arr(x.weak, 8).map((r) => ({ topic: str(r.topic, 80), subject: str(r.subject, 40), avg: num(r.avg, 0, 100), n: num(r.n, 0, 1e6) || 0 })).filter((r) => r.topic),
+    sessions: arr(x.sessions, 40).map((r) => ({ title: str(r.title, 80), subject: str(r.subject, 40), grade: str(r.grade, 10), at: num(r.at, 0, 4e12) || 0, answered: num(r.answered, 0, 100) || 0, total: num(r.total, 0, 100) || 0, avg: num(r.avg, 0, 100), ms: num(r.ms, 0, 1e9) || 0 })).filter((r) => r.title),
+    materials: num(x.materials, 0, 10000) || 0
+  };
+}
+
+async function sync(action, b, env) {
+  switch (action) {
+    case 'olustur': { // öğrenci cihazı: yeni aile + ilk kod
+      const familyId = b64url(rand(18));
+      const token = b64url(rand(32));
+      await env.SYNC.put('fam:' + familyId, JSON.stringify({ s: await sha(token), p: [], c: Date.now() }));
+      const code = await issueCode(env, familyId);
+      return { familyId, token, code, expiresIn: 600 };
+    }
+    case 'kod': { // öğrenci: başka bir veli için yeni kod
+      const a = await auth(env, b);
+      if (a.role !== 'ogrenci') throw bad('Yalnızca öğrenci cihazı kod üretebilir', 403);
+      if ((a.fam.p || []).length >= 6) throw bad('En fazla 6 veli bağlanabilir', 400);
+      return { code: await issueCode(env, b.familyId), expiresIn: 600 };
+    }
+    case 'katil': { // veli: kodla bağlan
+      const code = str(b.code, 12).toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (code.length !== 6) throw bad('Kod 6 karakter olmalı');
+      const familyId = await env.SYNC.get('code:' + code);
+      if (!familyId) throw bad('Kod bulunamadı ya da süresi doldu', 404);
+      await env.SYNC.delete('code:' + code); // tek kullanımlık
+      const fam = await family(env, familyId);
+      if (!fam) throw bad('Bağlantı bulunamadı', 404);
+      const token = b64url(rand(32));
+      const parentId = b64url(rand(9));
+      fam.p = (fam.p || []).concat([{ i: parentId, h: await sha(token), t: Date.now() }]).slice(-6);
+      await env.SYNC.put('fam:' + familyId, JSON.stringify(fam));
+      const sumRaw = await env.SYNC.get('sum:' + familyId);
+      const name = sumRaw ? (JSON.parse(sumRaw).name || '') : '';
+      return { familyId, token, parentId, name };
+    }
+    case 'yukle': { // öğrenci: özeti yükle
+      const a = await auth(env, b);
+      if (a.role !== 'ogrenci') throw bad('Yalnızca öğrenci cihazı yükleyebilir', 403);
+      const sum = cleanSummary(b.summary);
+      const raw = JSON.stringify(sum);
+      if (raw.length > 120000) throw bad('Özet çok büyük', 413);
+      await env.SYNC.put('sum:' + b.familyId, raw, { expirationTtl: SUM_TTL });
+      return { ok: true, updatedAt: sum.updatedAt };
+    }
+    case 'oku': { // veli (ya da öğrenci): özeti oku
+      await auth(env, b);
+      const raw = await env.SYNC.get('sum:' + b.familyId);
+      return { summary: raw ? JSON.parse(raw) : null };
+    }
+    case 'veliler': {
+      const a = await auth(env, b);
+      if (a.role !== 'ogrenci') throw bad('Yetkisiz', 403);
+      return { parents: (a.fam.p || []).map((p) => ({ id: p.i, at: p.t })) };
+    }
+    case 'veli-sil': {
+      const a = await auth(env, b);
+      if (a.role !== 'ogrenci') throw bad('Yetkisiz', 403);
+      a.fam.p = (a.fam.p || []).filter((p) => p.i !== b.parentId);
+      await env.SYNC.put('fam:' + b.familyId, JSON.stringify(a.fam));
+      return { ok: true };
+    }
+    case 'ayril': { // veli kendi bağlantısını; öğrenci tüm aileyi ve verileri siler
+      const a = await auth(env, b);
+      if (a.role === 'ogrenci') {
+        await env.SYNC.delete('sum:' + b.familyId);
+        await env.SYNC.delete('fam:' + b.familyId);
+      } else {
+        a.fam.p = (a.fam.p || []).filter((p) => p.i !== a.parent.i);
+        await env.SYNC.put('fam:' + b.familyId, JSON.stringify(a.fam));
+      }
+      return { ok: true };
+    }
+    default:
+      throw bad('Bulunamadı', 404);
+  }
 }

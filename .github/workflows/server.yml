@@ -1,0 +1,74 @@
+name: Sunucu (Cloudflare Worker)
+
+on:
+  push:
+    branches: [main]
+    paths: ['server/**', '.github/workflows/server.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Anahtar kontrolü
+        id: check
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::notice title=Sunucu kurulmadı::CLOUDFLARE_API_TOKEN ve CLOUDFLARE_ACCOUNT_ID gizli değerleri eklenince sunucu otomatik kurulur."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.ok == 'true'
+
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.ok == 'true'
+        with:
+          node-version: 20
+
+      - name: Eşitleme deposunu (KV) hazırla
+        if: steps.check.outputs.ok == 'true'
+        working-directory: server
+        run: |
+          npm i -g wrangler@4 >/dev/null
+          find_id() { wrangler kv namespace list 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const a=JSON.parse(s.slice(s.indexOf("[")));const n=a.find(x=>/sinav-hocasi-sync$/.test(x.title));process.stdout.write(n?n.id:"")}catch(e){}})'; }
+          ID="$(find_id)"
+          if [ -z "$ID" ]; then
+            wrangler kv namespace create sinav-hocasi-sync || true
+            ID="$(find_id)"
+          fi
+          if [ -z "$ID" ]; then echo "::error::KV alanı oluşturulamadı. API anahtarında 'Workers KV Storage: Edit' izni olmalı."; exit 1; fi
+          printf '\n[[kv_namespaces]]\nbinding = "SYNC"\nid = "%s"\n' "$ID" >> wrangler.toml
+          echo "KV hazır."
+
+      - name: Yayımla
+        if: steps.check.outputs.ok == 'true'
+        working-directory: server
+        run: wrangler deploy
+
+      - name: Yapay zekâ anahtarını aktar (varsa)
+        if: steps.check.outputs.ok == 'true'
+        working-directory: server
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            printf '%s' "$ANTHROPIC_API_KEY" | wrangler secret put ANTHROPIC_API_KEY
+          else
+            echo "::notice::ANTHROPIC_API_KEY yok; bulut eşitleme çalışır, yapay zekâ özellikleri kapalı kalır."
+          fi
+
+      - name: Sağlık kontrolü
+        if: steps.check.outputs.ok == 'true'
+        run: |
+          sleep 5
+          curl -sS -H "Origin: https://aliyuksekal.github.io" https://sinav-hocasi.aliyuksekal.workers.dev/api/saglik || true

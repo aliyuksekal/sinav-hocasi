@@ -11,5 +11,6 @@
   } catch (e) {
     if (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.setAttribute('data-theme', 'dark');
   }
+  try { if (window.SHNative) document.documentElement.classList.add('native'); } catch (e) {}
   if (window.top !== window.self) { try { window.top.location = window.self.location; } catch (e) { document.documentElement.style.display = 'none'; } }
 })();

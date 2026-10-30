@@ -15,7 +15,10 @@
 | Değerlendirme | Kavram kapsamı + anlam benzerliği (Türkçe ek ve ünsüz yumuşaması toleranslı), olumsuzluk kontrolü, ezber uyarısı. Sunucu bağlıysa yapay zekâ cevabın anlamını değerlendirir |
 | Geri bildirim | Puan, "Neyi doğru yaptın?", "Neyi geliştirebilirsin?", örnek açıklama, ipucu, tekrar deneme |
 | İlerleme | Haftalık çalışma günleri, seri, başarı eğilimi grafiği, ders ortalamaları, zorlanılan konular, geçmiş |
-| Veli paneli | PIN korumalı (PBKDF2, deneme kilidi). Süre, ders, başarı, tekrar önerileri, rapor paylaşma. Öğrencinin cevap metinlerini göstermez |
+| **Tek uygulama, iki kullanım** | İlk açılışta tanıtım ekranları, ardından "Öğrenciyim / Veliyim" seçimi. Öğrenci normal Sınav Hocası'nı, veli çocuğunun ilerlemesini görür |
+| **Bulut eşitleme** | Öğrenci telefonu 6 haneli tek kullanımlık kod üretir, veli kodu yazar; çalışma süresi, puanlar ve konular veli telefonuna otomatik gelir (birden fazla çocuk / veli desteklenir) |
+| Veli paneli (öğrenci telefonunda) | PIN korumalı (PBKDF2, deneme kilidi), sekmeden çıkınca yeniden kilitlenir. Veli telefonu bağlantısı buradan yönetilir |
+| **Paylaşım** | Soruyu görsel kart + "sen de çöz" bağlantısıyla sınıf/veli grubunda paylaş; arkadaş uygulama olmadan tarayıcıda çözebilir. Sonuç ve uygulama daveti paylaşımı |
 | Görünüm | Açık / koyu / otomatik tema, büyük yazı seçeneği, ekran okuyucu etiketleri |
 | Veri | Her şey cihazda. Yedek indir / yükle, tek dokunuşla tümünü sil |
 
@@ -45,22 +48,24 @@ Paket adı: `com.benim.sinavhocasi` (test sürümü `com.benim.sinavhocasi.test`
 `app/` klasörü GitHub Pages ile yayımlanır: **https://aliyuksekal.github.io/sinav-hocasi/**
 (Repo → Settings → Pages → Source: **GitHub Actions** seçili olmalı.) Web sürümü ana ekrana eklenebilir (PWA) ve çevrimdışı açılır; kitabı doğrudan indiremez, PDF'i elle eklersin.
 
-## Yapay zekâ sunucusu (isteğe bağlı)
+## Sunucu: veli eşitlemesi + yapay zekâ
 
-Uygulama sunucusuz tam çalışır. Daha akıllı soru ve değerlendirme için `server/` klasöründeki Cloudflare Worker yayımlanır:
+Öğrenci tarafı sunucusuz tam çalışır. **Veli telefonuna eşitleme** ve isteğe bağlı **yapay zekâ** için `server/` klasöründeki Cloudflare Worker kullanılır. Kurulum GitHub üzerinden otomatiktir; repoya şu gizli değerleri ekle (Settings → Secrets and variables → Actions):
 
-```bash
-cd server
-npx wrangler deploy
-npx wrangler secret put ANTHROPIC_API_KEY
-```
+| Ad | Nereden |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | Cloudflare → My Profile → API Tokens → Create Token → **Edit Cloudflare Workers** şablonu |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare panelinde sağ altta "Account ID" |
+| `ANTHROPIC_API_KEY` | İsteğe bağlı; yapay zekâ soru/değerlendirme için |
 
-Adres `https://sinav-hocasi.aliyuksekal.workers.dev` olur; uygulama bunu kendisi algılar (Ayarlar → Özellik durumu → "Bağlı"). Anahtar yalnızca sunucuda durur.
+Ardından Actions → **Sunucu (Cloudflare Worker)** → Run workflow. Eşitleme deposu (KV) kendiliğinden oluşturulur ve sunucu `https://sinav-hocasi.aliyuksekal.workers.dev` adresinde yayımlanır; uygulama bunu kendisi algılar. Anahtarlar yalnızca sunucuda durur.
 
 ## Proje yapısı
 
 ```
 app/                 Arayüz (HTML/CSS/JS) — hem Android'in içine gömülür hem web'de yayımlanır
+  soru.html          Paylaşılan soruyu tarayıcıda çözdüren sayfa
+  indir.html         Paylaşım bağlantılarının açtığı indirme sayfası
   js/engine.js       Türkçe soru üretme ve cevap değerlendirme motoru (internetsiz)
   js/app.js          Uygulama: depolama, içe aktarma, metin tanıma, sınav akışı, ilerleme, veli paneli
 android/             Yerel Android kabuğu (Java): güvenli WebView, kamera, ML Kit metin tanıma, MEB kitap indirici

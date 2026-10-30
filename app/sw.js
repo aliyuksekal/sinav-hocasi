@@ -1,6 +1,6 @@
 // Sınav Hocası — çevrimdışı önbellek (yalnızca aynı kaynaktan GET istekleri)
-const CACHE = 'sh-v1.0.0';
-const SHELL = ['./', 'index.html', 'gizlilik.html', 'css/app.css', 'js/theme-boot.js', 'js/engine.js', 'js/app.js', 'manifest.webmanifest', 'icons/mark-144.png', 'icons/icon-48.png', 'icons/icon-192.png'];
+const CACHE = 'sh-v1.1.0';
+const SHELL = ['./', 'index.html', 'gizlilik.html', 'css/app.css', 'js/theme-boot.js', 'js/engine.js', 'js/app.js', 'manifest.webmanifest', 'icons/mark-144.png', 'icons/icon-48.png', 'icons/icon-192.png', 'soru.html', 'indir.html', 'js/soru.js'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

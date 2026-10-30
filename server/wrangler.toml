@@ -17,5 +17,8 @@ namespace_id = "2026"
   limit = 20
   period = 60
 
+# Bulut eşitleme deposu (KV) GitHub Actions tarafından otomatik oluşturulup buraya eklenir.
+# Elle kurulumda: npx wrangler kv namespace create sinav-hocasi-sync  → çıkan id ile [[kv_namespaces]] binding="SYNC" ekle.
+
 # Gizli anahtar dosyaya YAZILMAZ. Şu komutla eklenir:
 #   npx wrangler secret put ANTHROPIC_API_KEY
