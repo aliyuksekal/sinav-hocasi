@@ -29,7 +29,7 @@
   const DEF_RE = /^(.{6,220}?)\s+([^\s,;:]+(?:\s+[^\s,;:]+)?)\s+(denir|denilir|adı verilir|ad verilir|olarak adlandırılır|olarak tanımlanır|olarak bilinir)\s*[.!]?$/i;
   const COPULA_DEF_RE = /^([A-ZÇĞİÖŞÜ][^,;:]{2,40}),\s+(.{15,240}?)(dır|dir|dur|dür|tır|tir|tur|tür)\.?$/;
   const LIST_RE = /(şunlardır|faktörler|faktörleri|aşamaları|evreleri|çeşitleri|türleri|özellikleri|görevleri|bölümleri|katmanları|unsurları|öğeleri|ilkeleri|nedenleri|sonuçları|etkileri|yararları|zararları|kuralları)\b/i;
-  const NUM_RE = /\b(1[0-9]{3}|20[0-9]{2})\b|\b\d+(?:[.,]\d+)?\s?(?:%|km|m|cm|mm|kg|g|°C|derece|yıl|yüzyıl|milyon|bin)\b/;
+  const NUM_RE = /(?<![\p{L}\d])(1[0-9]{3}|20[0-9]{2})(?![\p{L}\d])|(?<![\p{L}\d])\d+(?:[.,]\d+)?\s?(?:%|km|cm|mm|kg|°C|derece|yıl|yüzyıl|milyon|bin|gün|saat|dakika|saniye|metre|litre|gram|m|g)(?![\p{L}\d])/u;
 
   const lower = (s) => String(s || '').toLocaleLowerCase('tr-TR');
   const clip = (s, n) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
@@ -204,13 +204,85 @@
     return t.replace(/["“”'’]/g, '').replace(/['’](n?[ıiuü]n|[ae]|y[ae]|d[ae]|t[ae]|d[ae]n|t[ae]n)$/i, '').trim();
   }
 
+  // ---------- Kitabın giriş ve son bölümleri ----------
+  // İstiklal Marşı, Gençliğe Hitabe, künye, içindekiler, önsöz, kitabın tanıtımı,
+  // kaynakça, sözlük, cevap anahtarı gibi sayfalardan soru üretilmez.
+  const FRONT_TITLES = [
+    ['istiklal marşı', 'İstiklal Marşı'], ['gençliğe hitabe', 'Gençliğe Hitabe'], ['atatürkün gençliğe hitabesi', 'Gençliğe Hitabe'],
+    ['içindekiler', 'İçindekiler'], ['önsöz', 'Önsöz'], ['sunuş', 'Sunuş'], ['sevgili öğrenciler', 'Önsöz'], ['değerli öğrenciler', 'Önsöz'],
+    ['kitabın tanıtımı', 'Kitabın tanıtımı'], ['kitabımızı tanıyalım', 'Kitabın tanıtımı'], ['kitabın yapısı', 'Kitabın tanıtımı'], ['kitap tanıtımı', 'Kitabın tanıtımı'],
+    ['ders kitabının tanıtımı', 'Kitabın tanıtımı'], ['simgeler', 'Kitabın tanıtımı'], ['kitapta kullanılan simgeler', 'Kitabın tanıtımı'],
+    ['kaynakça', 'Kaynakça'], ['kaynaklar', 'Kaynakça'], ['görsel kaynakça', 'Kaynakça'], ['genel ağ kaynakçası', 'Kaynakça'],
+    ['sözlük', 'Sözlük'], ['sözlükçe', 'Sözlük'], ['cevap anahtarı', 'Cevap anahtarı'], ['yanıt anahtarı', 'Cevap anahtarı'],
+    ['dizin', 'Dizin'], ['kısaltmalar', 'Kısaltmalar'], ['notlarım', 'Not sayfası']
+  ];
+  const ANTHEM_RE = /korkma,?\s*sönmez bu şafaklarda|sönmeden yurdumun üstünde tüten|ey türk gençliği|birinci vazifen|türk istikl[aâ]lini,?\s*türk cumhuriyetini|mehmet [aâ]kif ersoy|muhtaç olduğun kudret/;
+  const IMPRINT_RE = /\bisbn\b|her hakkı saklıdır|talim ve terbiye kurulu|basım yeri|baskı adedi|baskı sayısı|eğitim bakanlığı yayınları|dil uzmanı|görsel tasarım uzmanı|grafik tasarım|program geliştirme uzmanı|ölçme ve değerlendirme uzmanı|rehberlik uzmanı|editör|baskı ve cilt|sertifika no|kurul kararı/g;
+  const UNIT_START_RE = /^(\d+\.?\s*(ünite|tema|bölüm|öğrenme alanı)|(ünite|tema|bölüm)\s*\d+)\b/;
+
+  function plainLine(l) {
+    return lower(l).replace(/[âà]/g, 'a').replace(/[îì]/g, 'i').replace(/[ûù]/g, 'u').replace(/[’'`´]/g, '').replace(/[^a-zçğıöşü0-9\s.]/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  // Bir sayfa (ya da paragraf bloğu) giriş/son bölümü mü? Öyleyse türünü, değilse '' döner.
+  function pageKind(text) {
+    const raw = String(text || '');
+    const low = lower(raw).replace(/[âà]/g, 'a').replace(/[îì]/g, 'i');
+    const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return '';
+    if (ANTHEM_RE.test(low)) return /ey türk gençliği|birinci vazifen|muhtaç olduğun kudret/.test(low) ? 'Gençliğe Hitabe' : 'İstiklal Marşı';
+    const words = low.split(/\s+/).filter(Boolean).length;
+    if (words <= 30 && /ders kitabı|ders ve etkinlik kitabı|çalışma kitabı|öğretmen kılavuz kitabı/.test(low)) return 'Kapak';
+    const imprint = (low.match(IMPRINT_RE) || []).length;
+    if (imprint >= 2) return 'Künye';
+    const head = lines.slice(0, 5).map(plainLine);
+    for (const hl of head) {
+      const t = hl.replace(/[.\d\s]+$/, '').trim();
+      for (const [k, label] of FRONT_TITLES) if (t === k || (t.startsWith(k) && t.length <= k.length + 3)) return label;
+    }
+    // İçindekiler: satırların çoğu noktalı çizgi ya da sayfa numarasıyla biter
+    const tocLines = lines.filter((l) => !/[=+×÷<>]/.test(l) && (/(\.{3,}|…{2,}|_{3,})\s*\d{1,3}\s*$/.test(l) || /^\D.{2,70}\s\d{1,3}$/.test(l))).length;
+    if (lines.length >= 5 && tocLines >= Math.max(4, lines.length * 0.45)) return 'İçindekiler';
+    return '';
+  }
+
+  // Sayfa listesinde içeriğin başladığı sayfa (1'den başlar)
+  function contentStart(pages) {
+    let lastFront = 0;
+    for (let i = 0; i < pages.length; i++) {
+      const t = pages[i] || '';
+      const first = t.split('\n').map((l) => plainLine(l)).filter(Boolean).slice(0, 6);
+      if (pageKind(t)) { lastFront = i + 1; continue; }
+      if (i > 1 && first.some((l) => UNIT_START_RE.test(l))) return i + 1;
+    }
+    return Math.min(pages.length, lastFront + 1) || 1;
+  }
+
+  // Metin içinden giriş/son bölüm bloklarını çıkarır (sayfa ayracı \f ya da boş satır)
+  function stripFrontMatter(text) {
+    const src = String(text || '');
+    const chunks = src.indexOf('\f') >= 0 ? src.split('\f') : src.split(/\n\s*\n/);
+    const kept = [], skipped = [];
+    let dropping = '';
+    chunks.forEach((c) => {
+      const kind = pageKind(c);
+      const firstLine = plainLine((c.split('\n').find((l) => l.trim()) || ''));
+      if (kind) { skipped.push(kind); dropping = /Kaynakça|Sözlük|Cevap|Dizin|Kısaltma/.test(kind) ? kind : ''; return; }
+      // Önsöz gibi başlığın altındaki devam paragrafları: yeni bir başlık gelene kadar at
+      if (dropping && !UNIT_START_RE.test(firstLine) && c.length < 1200) { return; }
+      dropping = '';
+      kept.push(c);
+    });
+    return { text: kept.join(src.indexOf('\f') >= 0 ? '\n\n' : '\n\n'), skipped };
+  }
+
   // ---------- Soru üretimi ----------
   function generate(text, opts) {
     opts = opts || {};
     const count = Math.max(1, Math.min(30, opts.count || 10));
     const level = opts.level || 'orta';
     const nKeys = level === 'kolay' ? 3 : level === 'zor' ? 6 : 4;
-    const A = analyze(text);
+    const A = analyze(stripFrontMatter(text).text);
     const cands = [];
     const allToks = [];
     A.sents.forEach((x) => x.toks.forEach((tk) => allToks.push(tk)));
@@ -220,7 +292,7 @@
       if ((m = t.match(DEF_RE))) {
         let term = cleanTerm(m[2]);
         const parts = term.split(' ');
-        if (parts.length === 2 && (STOP.has(lower(parts[0])) || /(e|a|ye|ya|ne|na|i|ı|u|ü|in|ın|un|ün|den|dan)$/i.test(parts[0]))) term = parts[1];
+        if (parts.length === 2 && (STOP.has(lower(parts[0])) || (/(e|a|ye|ya|ne|na|i|ı|u|ü|den|dan|de|da)$/i.test(parts[0]) && !/(n?[ıiuü]n)$/i.test(parts[0])))) term = parts[1];
         if (term.length >= 3 && !STOP.has(lower(term))) {
           const ex = new Set(contentTokens(term).map(stem));
           cands.push({ s, type: 'tanim', bonus: 3, q: '«' + cap(term) + '» nedir? Kendi cümlelerinle açıkla.', ref: t, keys: keyTerms(m[1], A.weight, ex, nKeys) });
@@ -411,7 +483,7 @@
     'Bitkiler ürettikleri besinin bir kısmını solunumda kullanır, fazlasını ise nişasta olarak depolar. Canlılar oksijen ihtiyaçlarını büyük ölçüde fotosentez sayesinde karşılar.'
   ].join('\n');
 
-  const api = { generate, evaluate, analyze, cleanText, normalize, contentTokens, stem, wordSim, DEMO_TEXT };
+  const api = { generate, evaluate, analyze, cleanText, normalize, contentTokens, stem, wordSim, pageKind, contentStart, stripFrontMatter, DEMO_TEXT };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.SHEngine = Object.freeze(api);
 })(typeof self !== 'undefined' ? self : this);

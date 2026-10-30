@@ -117,7 +117,7 @@ public class BookBrowserActivity extends Activity {
         root.addView(bar, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(6)));
 
         cancel = new Button(this);
-        cancel.setText("İndirmeyi iptal et");
+        cancel.setText("İndirmeyi duraklat");
         cancel.setAllCaps(false);
         cancel.setVisibility(View.GONE);
         cancel.setOnClickListener(v -> cancelled = true);
@@ -200,6 +200,59 @@ public class BookBrowserActivity extends Activity {
         return n.isEmpty() ? "MEB ders kitabı" : n;
     }
 
+    // ------------------------------------------------------------------
+    // İndirme: kopmaya dayanıklı, kaldığı yerden devam eder (HTTP Range)
+    //  - Yarım dosya books/partial/<url-özeti>.part olarak saklanır
+    //  - Bağlantı koparsa artan aralıklarla 8 kez yeniden dener
+    //  - Sunucu dosyayı değiştirmişse (ETag/Last-Modified) baştan başlar
+    // ------------------------------------------------------------------
+    private static final int MAX_TRIES = 8;
+
+    private static String keyOf(String url) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] d = md.digest(url.getBytes("UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 12; i++) sb.append(String.format(Locale.ROOT, "%02x", d[i]));
+            return sb.toString();
+        } catch (Exception e) { return Integer.toHexString(url.hashCode()); }
+    }
+
+    private static String readText(File f) {
+        try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+            byte[] b = new byte[(int) Math.min(f.length(), 4096)];
+            int n = in.read(b);
+            return n > 0 ? new String(b, 0, n, "UTF-8") : "";
+        } catch (Exception e) { return ""; }
+    }
+
+    private static void writeText(File f, String s) {
+        try (FileOutputStream o = new FileOutputStream(f)) { o.write(s.getBytes("UTF-8")); } catch (Exception ignored) { }
+    }
+
+    private static boolean startsWithPdf(File f) {
+        try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+            byte[] b = new byte[1024];
+            int n = in.read(b);
+            return n > 0 && new String(b, 0, n, "ISO-8859-1").contains("%PDF-");
+        } catch (Exception e) { return false; }
+    }
+
+    private void cleanOldPartials(File partDir) {
+        File[] list = partDir.listFiles();
+        if (list == null) return;
+        long now = System.currentTimeMillis();
+        for (File f : list) if (now - f.lastModified() > 7L * 24 * 3600 * 1000) //noinspection ResultOfMethodCallIgnored
+            f.delete();
+    }
+
+    private void ui(String msg, int pct) {
+        ui.post(() -> {
+            status.setText(msg);
+            if (pct >= 0) { bar.setIndeterminate(false); bar.setProgress(pct); } else bar.setIndeterminate(true);
+        });
+    }
+
     private void startDownload(String url, String guessed) {
         if (!downloading.compareAndSet(false, true)) { toast("Bir kitap zaten iniyor."); return; }
         cancelled = false;
@@ -212,87 +265,149 @@ public class BookBrowserActivity extends Activity {
 
         new Thread(() -> {
             File dir = new File(getCacheDir(), "books");
+            File partDir = new File(dir, "partial");
             //noinspection ResultOfMethodCallIgnored
-            dir.mkdirs();
-            byte[] rnd = new byte[8];
-            new SecureRandom().nextBytes(rnd);
-            StringBuilder id = new StringBuilder("kitap_");
-            for (byte b : rnd) id.append(String.format(Locale.ROOT, "%02x", b));
-            File out = new File(dir, id + ".pdf");
-            HttpURLConnection c = null;
-            try {
-                String current = url;
-                for (int hop = 0; ; hop++) {
-                    if (hop > 5) throw new Exception("Çok fazla yönlendirme.");
-                    Uri cu = Uri.parse(current);
-                    if (!allowedHost(cu)) throw new Exception("Güvenilmeyen adres.");
-                    c = (HttpsURLConnection) new URL(current).openConnection();
-                    c.setInstanceFollowRedirects(false);
-                    c.setConnectTimeout(20000);
-                    c.setReadTimeout(30000);
-                    c.setRequestProperty("User-Agent", ua);
-                    c.setRequestProperty("Accept", "application/pdf,*/*;q=0.5");
-                    String cookie = CookieManager.getInstance().getCookie(current);
-                    if (cookie != null) c.setRequestProperty("Cookie", cookie);
-                    int code = c.getResponseCode();
-                    if (code >= 300 && code < 400) {
-                        String loc = c.getHeaderField("Location");
-                        c.disconnect();
-                        if (loc == null) throw new Exception("Yönlendirme hatalı.");
-                        current = new URL(new URL(current), loc).toString();
-                        continue;
-                    }
-                    if (code != 200) throw new Exception("Sunucu yanıtı: " + code);
-                    break;
-                }
-                long total = c.getContentLengthLong();
-                if (total > MAX_BYTES) throw new Exception("Dosya çok büyük.");
-                long done = 0;
-                int lastPct = -1;
-                try (InputStream in = c.getInputStream(); FileOutputStream fo = new FileOutputStream(out)) {
-                    byte[] buf = new byte[64 * 1024];
-                    int r;
-                    boolean first = true;
-                    while ((r = in.read(buf)) != -1) {
-                        if (cancelled) throw new Exception("İndirme iptal edildi.");
-                        if (first) {
-                            // İçerik gerçekten PDF mi? (ilk baytlarda %PDF-)
-                            String head = new String(buf, 0, Math.min(r, 1024), "ISO-8859-1");
-                            if (!head.contains("%PDF-")) throw new Exception("İndirilen dosya PDF değil. Kitabın sayfasındaki “PDF” bağlantısını dene.");
-                            first = false;
+            partDir.mkdirs();
+            cleanOldPartials(partDir);
+            String key = keyOf(url);
+            File part = new File(partDir, key + ".part");
+            File meta = new File(partDir, key + ".meta");
+            String validator = meta.exists() ? readText(meta) : "";
+            long total = -1;
+            if (part.length() > 0 && !startsWithPdf(part)) { //noinspection ResultOfMethodCallIgnored
+                part.delete(); validator = ""; }
+            if (part.length() > 0) ui("Kaldığı yerden devam ediliyor: " + name + " (" + (part.length() / (1024 * 1024)) + " MB hazır)", -1);
+
+            String error = null;
+            boolean done = false;
+            for (int attempt = 1; attempt <= MAX_TRIES && !done && !cancelled; attempt++) {
+                HttpURLConnection c = null;
+                try {
+                    long have = part.length();
+                    String current = url;
+                    int code;
+                    for (int hop = 0; ; hop++) {
+                        if (hop > 5) throw new SecurityException("Çok fazla yönlendirme.");
+                        if (!allowedHost(Uri.parse(current))) throw new SecurityException("Güvenilmeyen adres.");
+                        c = (HttpsURLConnection) new URL(current).openConnection();
+                        c.setInstanceFollowRedirects(false);
+                        c.setConnectTimeout(20000);
+                        c.setReadTimeout(30000);
+                        c.setRequestProperty("User-Agent", ua);
+                        c.setRequestProperty("Accept", "application/pdf,*/*;q=0.5");
+                        c.setRequestProperty("Accept-Encoding", "identity");
+                        String cookie = CookieManager.getInstance().getCookie(current);
+                        if (cookie != null) c.setRequestProperty("Cookie", cookie);
+                        if (have > 0) {
+                            c.setRequestProperty("Range", "bytes=" + have + "-");
+                            if (!validator.isEmpty()) c.setRequestProperty("If-Range", validator);
                         }
-                        done += r;
-                        if (done > MAX_BYTES) throw new Exception("Dosya çok büyük.");
-                        fo.write(buf, 0, r);
-                        if (total > 0) {
-                            int pct = (int) (done * 100 / total);
-                            if (pct != lastPct) {
-                                lastPct = pct;
-                                final long d = done;
-                                ui.post(() -> { bar.setIndeterminate(false); bar.setProgress(pct); status.setText("İndiriliyor: " + name + " (%" + pct + ", " + (d / (1024 * 1024)) + " MB)"); });
+                        code = c.getResponseCode();
+                        if (code >= 300 && code < 400) {
+                            String loc = c.getHeaderField("Location");
+                            c.disconnect();
+                            if (loc == null) throw new SecurityException("Yönlendirme hatalı.");
+                            current = new URL(new URL(current), loc).toString();
+                            continue;
+                        }
+                        break;
+                    }
+                    boolean append;
+                    if (code == 206 && have > 0) {
+                        append = true;
+                        String cr = c.getHeaderField("Content-Range"); // bytes 100-199/2000
+                        if (cr != null && cr.contains("/")) {
+                            try { total = Long.parseLong(cr.substring(cr.lastIndexOf('/') + 1).trim()); } catch (Exception ignored) { total = -1; }
+                            String startStr = cr.replaceAll("^bytes\\s+(\\d+)-.*$", "$1");
+                            if (!startStr.equals(String.valueOf(have))) { //noinspection ResultOfMethodCallIgnored
+                                part.delete(); validator = ""; throw new java.io.IOException("aralık uyuşmadı"); }
+                        }
+                    } else if (code == 200) {
+                        append = false; have = 0;
+                        total = c.getContentLengthLong();
+                    } else if (code == 416 && have > 0) {
+                        // Elimizdeki parça zaten tam olabilir
+                        total = have; done = true; break;
+                    } else {
+                        throw new SecurityException("Sunucu yanıtı: " + code);
+                    }
+                    if (total > MAX_BYTES) throw new SecurityException("Dosya çok büyük.");
+                    String et = c.getHeaderField("ETag");
+                    String lm = c.getHeaderField("Last-Modified");
+                    String v = et != null && !et.startsWith("W/") ? et : (lm != null ? lm : "");
+                    if (!append || validator.isEmpty()) { validator = v; writeText(meta, v); }
+
+                    long got = have;
+                    int lastPct = -1;
+                    try (InputStream in = c.getInputStream(); FileOutputStream fo = new FileOutputStream(part, append)) {
+                        byte[] buf = new byte[64 * 1024];
+                        int r;
+                        boolean first = !append;
+                        while ((r = in.read(buf)) != -1) {
+                            if (cancelled) throw new java.io.InterruptedIOException("iptal");
+                            if (first) {
+                                String head = new String(buf, 0, Math.min(r, 1024), "ISO-8859-1");
+                                if (!head.contains("%PDF-")) throw new SecurityException("İndirilen dosya PDF değil. Kitabın sayfasındaki “PDF” bağlantısını dene.");
+                                first = false;
+                            }
+                            got += r;
+                            if (got > MAX_BYTES) throw new SecurityException("Dosya çok büyük.");
+                            fo.write(buf, 0, r);
+                            if (total > 0) {
+                                int pct = (int) (got * 100 / total);
+                                if (pct != lastPct) { lastPct = pct; ui("İndiriliyor: " + name + " (%" + pct + ", " + (got / (1024 * 1024)) + " MB)", pct); }
                             }
                         }
                     }
+                    if (total > 0 && part.length() < total) throw new java.io.IOException("eksik");
+                    done = true;
+                } catch (SecurityException e) {
+                    error = e.getMessage(); //noinspection ResultOfMethodCallIgnored
+                    part.delete(); //noinspection ResultOfMethodCallIgnored
+                    meta.delete();
+                    break;
+                } catch (java.io.InterruptedIOException e) {
+                    if (cancelled) break;
+                    error = "Bağlantı zaman aşımına uğradı.";
+                } catch (Exception e) {
+                    error = "Bağlantı kesildi.";
+                } finally {
+                    if (c != null) c.disconnect();
                 }
-                if (done < 1024) throw new Exception("Dosya boş indi.");
-                Intent res = new Intent();
-                res.putExtra(EXTRA_FILE, out.getName());
-                res.putExtra(EXTRA_NAME, name);
-                ui.post(() -> { setResult(RESULT_OK, res); finish(); });
-            } catch (Exception e) {
-                //noinspection ResultOfMethodCallIgnored
-                out.delete();
-                String msg = e.getMessage() == null ? "Kitap indirilemedi." : e.getMessage();
-                ui.post(() -> {
-                    bar.setVisibility(View.GONE);
-                    cancel.setVisibility(View.GONE);
-                    status.setText(msg);
-                });
-                toast(msg);
-            } finally {
-                if (c != null) c.disconnect();
-                downloading.set(false);
+                if (!done && !cancelled && error != null && attempt < MAX_TRIES && !error.startsWith("Dosya") && !error.startsWith("İndirilen") && !error.startsWith("Sunucu") && !error.startsWith("Güvenilmeyen") && !error.startsWith("Çok") && !error.startsWith("Yönlendirme")) {
+                    long wait = Math.min(20000, 2000L << (attempt - 1));
+                    ui("Bağlantı kesildi. " + (part.length() / (1024 * 1024)) + " MB saklandı; " + (wait / 1000) + " sn sonra kaldığı yerden devam edilecek (" + attempt + "/" + (MAX_TRIES - 1) + ")", -1);
+                    try { Thread.sleep(wait); } catch (InterruptedException ie) { break; }
+                    error = null;
+                } else if (error != null) {
+                    break;
+                }
             }
+
+            if (done && part.length() >= 1024 && startsWithPdf(part)) {
+                byte[] rnd = new byte[8];
+                new SecureRandom().nextBytes(rnd);
+                StringBuilder id = new StringBuilder("kitap_");
+                for (byte b : rnd) id.append(String.format(Locale.ROOT, "%02x", b));
+                File out = new File(dir, id + ".pdf");
+                if (!part.renameTo(out)) { error = "Dosya kaydedilemedi."; }
+                else {
+                    //noinspection ResultOfMethodCallIgnored
+                    meta.delete();
+                    Intent res = new Intent();
+                    res.putExtra(EXTRA_FILE, out.getName());
+                    res.putExtra(EXTRA_NAME, name);
+                    ui.post(() -> { setResult(RESULT_OK, res); finish(); });
+                    downloading.set(false);
+                    return;
+                }
+            }
+            final String msg = cancelled
+                    ? "İndirme duraklatıldı. " + (part.length() / (1024 * 1024)) + " MB saklandı; aynı kitaba tekrar dokununca kaldığı yerden devam eder."
+                    : (error == null ? "Kitap indirilemedi." : error) + (part.length() > 0 ? " İnen kısım saklandı; tekrar dokununca kaldığı yerden devam eder." : "");
+            ui.post(() -> { bar.setVisibility(View.GONE); cancel.setVisibility(View.GONE); status.setText(msg); });
+            toast(msg);
+            downloading.set(false);
         }, "sh-book").start();
     }
 

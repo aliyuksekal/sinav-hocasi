@@ -10,7 +10,7 @@
   'use strict';
 
   const E = window.SHEngine;
-  const VERSION = '1.2.0';
+  const VERSION = '1.3.0';
   const API_BASE = 'https://sinav-hocasi.aliyuksekal.workers.dev';
   const MB = 1024 * 1024;
   const LIMITS = { imageBytes: 30 * MB, pdfBytes: 250 * MB, materials: 120, textChars: 400000, sessions: 300, answerChars: 4000, nameChars: 120, titleChars: 80 };
@@ -233,7 +233,7 @@
     if (Array.isArray(raw.children)) {
       st.children = raw.children.slice(0, 8).filter((c) => c && ID_RE.test(c.familyId || '') && ID_RE.test(c.token || '')).map((c) => ({
         familyId: c.familyId, token: c.token, name: clampStr(c.name, 30), addedAt: Number(c.addedAt) || Date.now(),
-        fetchedAt: Number(c.fetchedAt) || 0, revoked: !!c.revoked, sum: sanitizeSummary(c.sum)
+        fetchedAt: Number(c.fetchedAt) || 0, revoked: !!c.revoked, sum: sanitizeSummary(c.sum), nick: clampStr(c.nick, 30).replace(/[<>]/g, '')
       }));
     }
     st.sessions = (Array.isArray(raw.sessions) ? raw.sessions : []).slice(-LIMITS.sessions).map(sanitizeSession).filter(Boolean);
@@ -357,7 +357,8 @@
       pages: Math.max(0, Math.min(5000, Number(m.pages) || 0)),
       pageFrom: Math.max(0, Number(m.pageFrom) || 0),
       pageTo: Math.max(0, Number(m.pageTo) || 0),
-      origin: clampStr(m.origin, 20)
+      origin: clampStr(m.origin, 20),
+      frontPages: Math.max(0, Math.min(200, Number(m.frontPages) || 0))
     };
   }
 
@@ -620,12 +621,23 @@
         const doc = await lib.getDocument({ data: new Uint8Array(await stored.arrayBuffer()), isEvalSupported: false, disableFontFace: true, useSystemFonts: false, enableXfa: false }).promise;
         m.pages = doc.numPages;
         m.pageFrom = 1; m.pageTo = Math.min(doc.numPages, 30);
+        if (doc.numPages > 6) {
+          // Kitabın giriş sayfalarını (İstiklal Marşı, Hitabe, künye, içindekiler, önsöz…) atla
+          const texts = [];
+          for (let p = 1; p <= Math.min(40, doc.numPages); p++) {
+            try { const pg = await doc.getPage(p); texts.push(joinPdfItems((await pg.getTextContent()).items)); pg.cleanup(); } catch (e) { texts.push(''); }
+          }
+          const start = E.contentStart(texts);
+          if (start > 1 && start <= doc.numPages) {
+            m.pageFrom = start; m.pageTo = Math.min(doc.numPages, start + 29); m.frontPages = start - 1;
+          }
+        }
         m.thumb = await pdfThumb(doc);
-        doc.destroy();
+        closeDoc(doc);
       } catch (e) {
         if (/şifre|password/i.test(String(e && (e.name + e.message)))) throw new Error('PDF şifreli; şifresiz bir kopya ekle.');
         if (/Invalid PDF|bozuk|corrupt/i.test(String(e && e.message))) throw new Error('PDF bozuk görünüyor.');
-        libAvailable.pdf = false; // okuyucu yok — dosyayı yine de sakla
+        console.warn('PDF okunamadı:', e && e.message); libAvailable.pdf = false; // okuyucu yok — dosyayı yine de sakla
       }
     } else {
       m.thumb = await makeThumb(stored);
@@ -635,6 +647,8 @@
     await DB.put(m);
     return m;
   }
+
+  function closeDoc(doc) { try { if (typeof doc.destroy === 'function') doc.destroy(); else if (typeof doc.cleanup === 'function') doc.cleanup(); } catch (e) { /* yok say */ } }
 
   async function pdfThumb(doc) {
     try {
@@ -754,6 +768,7 @@
       const blob = await DB.getBlob(id);
       if (!blob) throw new Error('Dosya bulunamadı.');
       let text = '', source = '';
+      let skippedNote = '';
       if (m.kind === 'image') {
         set('Metin tanınıyor', 5);
         const r = await ocr(blob, (p) => set('Metin tanınıyor', Math.round(5 + p * 90)));
@@ -764,6 +779,7 @@
         const from = Math.max(1, Math.min(doc.numPages, opts.from || m.pageFrom || 1));
         const to = Math.max(from, Math.min(doc.numPages, opts.to || m.pageTo || Math.min(doc.numPages, 30), from + 79));
         const parts = [];
+        const skippedKinds = [];
         let scanned = 0;
         for (let p = from; p <= to; p++) {
           set('Sayfa ' + p + ' / ' + to, Math.round(((p - from) / (to - from + 1)) * 100));
@@ -780,20 +796,29 @@
               t = (await ocr(c)).text;
             } catch (e) { t = ''; }
           }
-          if (t.trim()) parts.push(t.trim());
+          const kind = E.pageKind(t);
+          if (kind) skippedKinds.push(kind);
+          else if (t.trim()) parts.push(t.trim());
           page.cleanup();
         }
-        doc.destroy();
+        closeDoc(doc);
+        if (!parts.length && skippedKinds.length) throw new Error('Seçtiğin sayfalar kitabın giriş ya da son bölümü (' + Array.from(new Set(skippedKinds)).join(', ') + '). Konuların olduğu bir sayfa aralığı seç.');
+        if (skippedKinds.length) skippedNote = skippedKinds.length + ' giriş/son sayfa atlandı (' + Array.from(new Set(skippedKinds)).slice(0, 3).join(', ') + ').';
         text = parts.join('\n\n');
         source = scanned ? 'pdf+ocr' : 'pdf';
         m.pageFrom = from; m.pageTo = to;
       }
       text = E.cleanText(text);
+      if (m.kind === 'image' && text.length >= 20) {
+        const fm = E.stripFrontMatter(text);
+        if (fm.skipped.length && fm.text.trim().length < 40) throw new Error('Bu sayfa kitabın “' + fm.skipped[0] + '” bölümü; sorular ders konularından hazırlanır. Konu anlatılan bir sayfanın fotoğrafını çek.');
+        if (fm.skipped.length) { text = E.cleanText(fm.text); skippedNote = '“' + fm.skipped[0] + '” bölümü atlandı.'; }
+      }
       if (text.length < 20) throw new Error('Bu materyalde okunabilir metin bulunamadı. Daha net bir fotoğraf dene ya da metni kendin yaz.');
       m.text = text.slice(0, LIMITS.textChars);
       m.textSource = source;
       await DB.put(m);
-      toast('“' + m.name + '” metne dönüştürüldü.');
+      toast('“' + m.name + '” metne dönüştürüldü.' + (skippedNote ? ' ' + skippedNote : ''));
     } catch (e) {
       toast(e.message || 'Metne dönüştürülemedi.', true);
       throw e;
@@ -1305,7 +1330,7 @@
         b.append(h('div', { class: 'panel tight stack' },
           h('div', { class: 'label', text: 'Hangi sayfaları çalışacaksın?' }),
           h('div', { class: 'two' }, h('label', { class: 'field' }, h('span', { class: 'hint', text: 'Başlangıç' }), from), h('label', { class: 'field' }, h('span', { class: 'hint', text: 'Bitiş' + (m.pages ? ' (en fazla ' + m.pages + ')' : '') }), to)),
-          h('p', { class: 'hint', text: 'Tek seferde en fazla 80 sayfa dönüştürülür. Kitaptaki sayfa numarası ile PDF sayfa numarası farklı olabilir.' }),
+          h('p', { class: 'hint', text: 'Tek seferde en fazla 80 sayfa dönüştürülür. İstiklal Marşı, Gençliğe Hitabe, İçindekiler, Önsöz, kitap tanıtımı, cevap anahtarı ve kaynakça sayfaları kendiliğinden atlanır.' + (m.frontPages ? ' Bu kitapta konular ' + (m.frontPages + 1) + '. sayfadan başlıyor.' : '') }),
           h('button', { class: 'btn btn-primary btn-block', type: 'button', disabled: !!b0, on: { click: () => {
             const f = Math.max(1, parseInt(from.value, 10) || 1), t = Math.max(f, parseInt(to.value, 10) || f);
             if (m.pages && f > m.pages) { toast('Başlangıç sayfası kitaptaki sayfa sayısından büyük.', true); return; }
@@ -2041,6 +2066,18 @@
   // VELİ MODU — buluttan gelen ilerleme
   // ======================================================================
   let activeKid = 0;
+  const kidName = (k, i) => k.nick || (k.sum && k.sum.name) || k.name || (i + 1) + '. çocuk';
+  function renameKid(i) {
+    const k = S.children[i];
+    if (!k) return;
+    openSheet('Çocuğuna isim ver', (b, close) => {
+      const input = h('input', { type: 'text', maxlength: 30, value: k.nick || (k.sum && k.sum.name) || '', placeholder: 'Örn. Elif', 'aria-label': 'Çocuğun adı' });
+      b.append(
+        h('p', { class: 'muted small', text: 'Bu isim yalnızca senin telefonunda görünür.' }),
+        input,
+        h('button', { class: 'btn btn-primary btn-block', type: 'button', text: 'Kaydet', on: { click: () => { k.nick = clampStr(input.value, 30).replace(/[<>]/g, '').trim(); save(true); close(); render(); } } }));
+    });
+  }
   async function fetchKid(kid) {
     try {
       const d = await Server.sync('oku', { familyId: kid.familyId, token: kid.token });
@@ -2064,8 +2101,8 @@
         h('span', { text: kid.revoked ? 'Bağlantı kaldırılmış' : kid.sum && kid.sum.updatedAt ? 'Son güncelleme: ' + ago(kid.sum.updatedAt) : 'Henüz veri gelmedi' }),
         h('button', { class: 'btn btn-sm btn-soft', type: 'button', on: { click: async (e) => { e.currentTarget.disabled = true; await fetchKid(kid); draw(); } } }, icon('refresh'), 'Yenile'));
       fill(wrap, 
-        h('div', { class: 'row spread', css: { margin: '8px 0 12px' } }, h('h1', { text: kid.name ? kid.name : 'Çocuğumun ilerlemesi' })),
-        S.children.length > 1 ? h('div', { class: 'kids', role: 'group', 'aria-label': 'Çocuk seç' }, S.children.map((k, i) => h('button', { type: 'button', 'aria-pressed': String(i === activeKid), text: k.name || (i + 1) + '. çocuk', on: { click: () => { activeKid = i; render(); } } }))) : null,
+        h('div', { class: 'row spread', css: { margin: '8px 0 12px' } }, h('h1', { text: kidName(kid, activeKid) }), h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'İsim ver', title: 'İsim ver', on: { click: () => renameKid(activeKid) } }, icon('edit'))),
+        S.children.length > 1 ? h('div', { class: 'kids', role: 'group', 'aria-label': 'Çocuk seç' }, S.children.map((k, i) => h('button', { type: 'button', 'aria-pressed': String(i === activeKid), text: kidName(k, i), on: { click: () => { activeKid = i; render(); } } }))) : null,
         line,
         kid.revoked ? notice('Öğrenci telefonundan bağlantı kaldırılmış. “Çocuklarım” bölümünden yeni kodla tekrar bağlanabilirsin.') : null,
         kid.error && !kid.revoked ? notice(kid.error) : null,
@@ -2079,6 +2116,7 @@
 
   function codeInput(onDone) {
     const input = h('input', { type: 'text', class: 'code-in', inputmode: 'text', autocomplete: 'one-time-code', autocapitalize: 'characters', spellcheck: 'false', maxlength: 7, placeholder: 'ABC123', 'aria-label': '6 haneli bağlantı kodu' });
+    const nameIn = h('input', { type: 'text', maxlength: 30, placeholder: 'Çocuğunun adı (isteğe bağlı)', 'aria-label': 'Çocuğunun adı' });
     const btn = h('button', { class: 'btn btn-primary btn-block', type: 'button', disabled: true }, icon('link'), 'Bağlan');
     input.addEventListener('input', () => { const v = input.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6); input.value = v; btn.disabled = v.length !== 6; });
     btn.addEventListener('click', async () => {
@@ -2090,7 +2128,7 @@
         const d = await Server.sync('katil', { code });
         if (!ID_RE.test(d.familyId || '') || !ID_RE.test(d.token || '')) throw new Error('Sunucu yanıtı geçersiz');
         if (S.children.some((k) => k.familyId === d.familyId)) { toast('Bu çocuk zaten ekli.'); onDone(); return; }
-        const kid = { familyId: d.familyId, token: d.token, name: clampStr(d.name, 30), addedAt: Date.now(), fetchedAt: 0, revoked: false, sum: null };
+        const kid = { familyId: d.familyId, token: d.token, name: clampStr(d.name, 30), nick: clampStr(nameIn.value, 30).replace(/[<>]/g, '').trim(), addedAt: Date.now(), fetchedAt: 0, revoked: false, sum: null };
         S.children.push(kid); activeKid = S.children.length - 1;
         save(true);
         await fetchKid(kid);
@@ -2098,11 +2136,11 @@
         onDone();
       } catch (e) { toast(e.status === 404 ? 'Kod bulunamadı ya da süresi doldu. Çocuğun telefonundan yeni kod al.' : (e.message || 'Bağlanamadı.'), true); btn.disabled = false; }
     });
-    return [input, btn];
+    return [input, nameIn, btn];
   }
 
   function viewPairParent() {
-    const [input, btn] = codeInput(() => go('vozet'));
+    const [input, nameIn, btn] = codeInput(() => go('vozet'));
     return h('div', {},
       h('section', { class: 'hoca' },
         h('div', { class: 'hoca-face' }, h('img', { src: 'icons/mark-144.png', alt: '', width: 76, height: 76 })),
@@ -2112,7 +2150,7 @@
           h('li', {}, h('div', {}, h('b', { text: 'Çocuğunun telefonunda Sınav Hocası’nı aç' }), h('p', { class: 'muted small', text: '“Veli” sekmesine gir, veli PIN’ini oluştur ya da gir.' }))),
           h('li', {}, h('div', {}, h('b', { text: '“Veli telefonunu bağla”ya dokun' }), h('p', { class: 'muted small', text: 'Ekranda 6 haneli bir kod çıkar.' }))),
           h('li', {}, h('div', {}, h('b', { text: 'Kodu buraya yaz' }), h('p', { class: 'muted small', text: 'Kod 10 dakika geçerli ve tek kullanımlık.' })))),
-        input, btn),
+        input, nameIn, btn),
       !Server.canSync && Server.status !== 'bilinmiyor' ? h('div', { css: { 'margin-top': '12px' } }, syncUnavailable()) : null,
       h('p', { class: 'xs muted', css: { 'margin-top': '14px' }, text: 'Çocuğun cevap metinleri ve kitap sayfaları velilere gönderilmez; yalnızca süre, ders, puan ve konu başlıkları paylaşılır.' }));
   }
@@ -2121,12 +2159,13 @@
     return h('div', {},
       h('h1', { text: 'Çocuklarım', css: { margin: '8px 0 14px' } }),
       S.children.length ? h('div', { class: 'hist' }, S.children.map((k, i) => h('div', { class: 'hist-item' },
-        h('div', {}, h('b', { text: k.name || (i + 1) + '. çocuk' }), h('div', { class: 'xs muted', text: k.revoked ? 'Bağlantı kaldırılmış' : k.sum && k.sum.updatedAt ? 'Son güncelleme: ' + ago(k.sum.updatedAt) : 'Henüz veri yok' })),
-        h('button', { class: 'btn btn-sm btn-ghost', type: 'button', 'aria-label': (k.name || 'Çocuk') + ' bağlantısını kaldır', on: { click: async () => {
+        h('div', {}, h('b', { text: kidName(k, i) }), h('div', { class: 'xs muted', text: k.revoked ? 'Bağlantı kaldırılmış' : k.sum && k.sum.updatedAt ? 'Son güncelleme: ' + ago(k.sum.updatedAt) : 'Henüz veri yok' })),
+        h('div', { class: 'row', css: { gap: '4px' } }, h('button', { class: 'btn btn-sm btn-soft', type: 'button', 'aria-label': kidName(k, i) + ' için isim ver', on: { click: () => renameKid(i) } }, icon('edit'), 'İsim'),
+        h('button', { class: 'btn btn-sm btn-ghost', type: 'button', 'aria-label': kidName(k, i) + ' bağlantısını kaldır', on: { click: async () => {
           if (!(await confirmBox('Bu çocuk listeden çıkarılsın mı?', 'Bu telefon artık onun ilerlemesini görmez. İstersen yeni kodla tekrar bağlanabilirsin.', 'Çıkar', true))) return;
           try { await Server.sync('ayril', { familyId: k.familyId, token: k.token }); } catch (e) { /* bağlantı zaten yoksa da listeden çıkar */ }
           S.children.splice(i, 1); activeKid = 0; save(true); render();
-        } } }, icon('trash'))))) : h('div', { class: 'empty' }, h('b', { text: 'Henüz bağlı çocuk yok' }), h('p', { text: 'Aşağıdan kodla ekle.' })),
+        } } }, icon('trash')))))) : h('div', { class: 'empty' }, h('b', { text: 'Henüz bağlı çocuk yok' }), h('p', { text: 'Aşağıdan kodla ekle.' })),
       h('div', { class: 'section-head' }, h('h2', { text: 'Çocuk ekle' })),
       h('div', { class: 'panel stack' }, h('p', { class: 'small muted', text: 'Çocuğunun telefonunda Veli sekmesi → “Veli telefonunu bağla” (ya da “Başka veli ekle”) ile çıkan kodu yaz.' }), ...codeInput(() => go('vozet'))));
   }
