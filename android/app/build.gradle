@@ -16,6 +16,8 @@ android {
         targetSdk 36
         versionCode((env.VERSION_CODE ?: '1').toInteger())
         versionName env.VERSION_NAME ?: '1.0.0'
+        // Play Integrity için Google Cloud proje numarası (GitHub gizli değeri CLOUD_PROJECT_NUMBER). 0 = kapalı.
+        buildConfigField 'long', 'CLOUD_PROJECT_NUMBER', ((env.CLOUD_PROJECT_NUMBER ?: '0').replaceAll('[^0-9]', '') ?: '0') + 'L'
     }
 
     signingConfigs {
@@ -75,4 +77,8 @@ dependencies {
     implementation 'androidx.webkit:webkit:1.12.1'
     implementation 'androidx.core:core:1.13.1'
     implementation 'com.google.mlkit:text-recognition:16.0.1'
+    // Sınav Hocası Plus: Google Play Faturalandırma (Ağustos 2026'dan itibaren en az 8. sürüm zorunlu)
+    implementation 'com.android.billingclient:billing:8.0.0'
+    // Cihaz/uygulama bütünlüğü (root'lu cihaz, değiştirilmiş APK tespiti — karar sunucuda)
+    implementation 'com.google.android.play:integrity:1.4.0'
 }

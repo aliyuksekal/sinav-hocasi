@@ -78,6 +78,7 @@ public class MainActivity extends Activity {
     private volatile String currentUrl = "";
     private final Handler ui = new Handler(Looper.getMainLooper());
     private TextRecognizer recognizer;
+    private PlusBilling plus;
 
     @SuppressLint({"SetJavaScriptEnabled", "JavascriptInterface"})
     @Override
@@ -168,6 +169,10 @@ public class MainActivity extends Activity {
         });
 
         web.addJavascriptInterface(new Bridge(), "SHNative");
+        plus = new PlusBilling(this, (event, data) -> {
+            String js = "window.SHBridge&&window.SHBridge.plusEvent&&window.SHBridge.plusEvent(" + JSONObject.quote(event) + "," + JSONObject.quote(data.toString()) + ")";
+            ui.post(() -> { if (web != null && fromOurPage()) web.evaluateJavascript(js, null); });
+        });
 
         if (Build.VERSION.SDK_INT >= 33) {
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::handleBack);
@@ -387,6 +392,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         if (recognizer != null) { recognizer.close(); recognizer = null; }
+        if (plus != null) { plus.destroy(); plus = null; }
         if (web != null) {
             web.removeJavascriptInterface("SHNative");
             root.removeView(web);
@@ -414,8 +420,44 @@ public class MainActivity extends Activity {
                 o.put("ocr", true);
                 o.put("books", true);
                 o.put("shareImage", true);
+                o.put("plus", true);
+                o.put("integrity", PlusBilling.integrityConfigured());
             } catch (Exception ignored) { }
             return o.toString();
+        }
+
+        // ---- Sınav Hocası Plus (Google Play Faturalandırma) ----
+        // Not: Köprü yalnızca Google'ın verdiği jetonu taşır; Plus kararını sunucu verir.
+        private boolean okId(String id) { return id != null && id.length() <= 40; }
+
+        @JavascriptInterface
+        public void plusProducts(String id) {
+            if (!fromOurPage() || !okId(id)) return;
+            ui.post(() -> { if (plus != null) plus.products(id); });
+        }
+
+        @JavascriptInterface
+        public void plusBuy(String id, String offerToken, String account) {
+            if (!fromOurPage() || !okId(id)) return;
+            ui.post(() -> { if (plus != null) plus.buy(id, offerToken, account); });
+        }
+
+        @JavascriptInterface
+        public void plusRestore(String id) {
+            if (!fromOurPage() || !okId(id)) return;
+            ui.post(() -> { if (plus != null) plus.restore(id); });
+        }
+
+        @JavascriptInterface
+        public void plusManage() {
+            if (!fromOurPage()) return;
+            ui.post(() -> { if (plus != null) plus.manage(); });
+        }
+
+        @JavascriptInterface
+        public void integrity(String id, String requestHash) {
+            if (!fromOurPage() || !okId(id)) return;
+            ui.post(() -> { if (plus != null) plus.integrity(id, requestHash); });
         }
 
         @JavascriptInterface

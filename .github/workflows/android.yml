@@ -20,6 +20,7 @@ jobs:
     env:
       VERSION_NAME: "1.0.${{ github.run_number }}"
       VERSION_CODE: "${{ github.run_number }}"
+      CLOUD_PROJECT_NUMBER: ${{ secrets.CLOUD_PROJECT_NUMBER }}
     steps:
       - uses: actions/checkout@v4
 

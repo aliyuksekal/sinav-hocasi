@@ -67,6 +67,19 @@ jobs:
             echo "::notice::ANTHROPIC_API_KEY yok; bulut eşitleme çalışır, yapay zekâ özellikleri kapalı kalır."
           fi
 
+      - name: Ödeme doğrulama anahtarını aktar (varsa)
+        if: steps.check.outputs.ok == 'true'
+        working-directory: server
+        env:
+          GOOGLE_SA: ${{ secrets.GOOGLE_SA }}
+        run: |
+          if [ -n "$GOOGLE_SA" ]; then
+            printf '%s' "$GOOGLE_SA" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.client_email||!j.private_key)process.exit(1)})' || { echo "::error::GOOGLE_SA geçerli bir hizmet hesabı JSON'u değil."; exit 1; }
+            printf '%s' "$GOOGLE_SA" | wrangler secret put GOOGLE_SA
+          else
+            echo "::notice::GOOGLE_SA yok; Plus satın alımları doğrulanamaz (Plus kapalı kalır)."
+          fi
+
       - name: Sağlık kontrolü
         if: steps.check.outputs.ok == 'true'
         run: |

@@ -9,6 +9,13 @@ workers_dev = true
 ALLOWED_ORIGINS = "https://aliyuksekal.github.io,https://appassets.androidplatform.net"
 # Kullanılacak model; maliyet/kaliteye göre değiştirilebilir
 MODEL = "claude-haiku-5-5"
+# Google Play paket adı ve Plus abonelik ürün kimliği(leri)
+PACKAGE_NAME = "com.benim.sinavhocasi"
+PLUS_PRODUCTS = "sinav_hocasi_plus"
+# Plus ailesi başına günlük yapay zekâ isteği sınırı (maliyet koruması)
+DAILY_AI_LIMIT = "200"
+# Play Integrity: uygulama Play'de yayımlanınca "zorunlu" yapın (root/değiştirilmiş APK reddedilir)
+INTEGRITY = "kapali"
 
 # IP başına dakikada en fazla 20 istek (uç nokta başına)
 [[ratelimits]]
@@ -23,3 +30,4 @@ namespace_id = "2026"
 
 # Gizli anahtar dosyaya YAZILMAZ. Şu komutla eklenir:
 #   npx wrangler secret put ANTHROPIC_API_KEY
+#   npx wrangler secret put GOOGLE_SA   (Google Cloud hizmet hesabı JSON anahtarı; satın alma doğrulaması için)

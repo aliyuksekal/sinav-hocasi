@@ -7,6 +7,16 @@
  *   POST /api/degerlendir   Öğrencinin cevabını anlamına göre puanlar
  *   POST /api/metin         Fotoğraftaki yazıyı okur
  *   POST /api/es/...        Öğrenci–veli bulut eşitlemesi (olustur, kod, katil, yukle, oku, veliler, veli-sil, ayril)
+ *   POST /api/plus/dogrula  Veli telefonundaki Google Play aboneliğini Google'a sorup aileye Plus tanımlar
+ *   POST /api/plus/durum    Bir ailenin Plus durumunu döner (gerekirse Google'dan yeniden doğrular)
+ *
+ * Plus kilidi
+ *   - Yapay zekâ uç noktaları ve ikinci veli bağlantısı yalnızca geçerli Plus aboneliğiyle çalışır.
+ *   - Abonelik her zaman sunucuda, Google Play Developer API ile doğrulanır; uygulamanın "Plus'ım var"
+ *     demesine asla güvenilmez. Değiştirilmiş/kırılmış bir uygulama ödeme olmadan bu özellikleri kullanamaz.
+ *   - Bir satın alma jetonu yalnızca bir veli hesabına bağlanabilir (jeton paylaşımı engellenir).
+ *   - Play Integrity (isteğe bağlı, INTEGRITY=zorunlu): istek gerçek, Play'den indirilmiş uygulamadan ve
+ *     bütünlüğü bozulmamış cihazdan mı geliyor; root'lu/değiştirilmiş ortamlar reddedilir.
  *
  * Güvenlik
  *   - API anahtarı yalnızca Worker gizli değişkeninde (ANTHROPIC_API_KEY) durur; uygulamaya hiç gitmez.
@@ -38,12 +48,14 @@ export default {
     if (!allowed.includes(origin)) return json({ error: 'Bu kaynaktan erişim yok' }, 403);
 
     if (url.pathname === '/api/saglik' && request.method === 'GET') {
-      return json({ ok: true, ai: Boolean(env.ANTHROPIC_API_KEY), sync: Boolean(env.SYNC), surum: 2 });
+      return json({ ok: true, ai: Boolean(env.ANTHROPIC_API_KEY), sync: Boolean(env.SYNC), plus: Boolean(env.GOOGLE_SA && env.SYNC), plusRequired: plusRequired(env), integrity: env.INTEGRITY === 'zorunlu', surum: 3 });
     }
     if (request.method !== 'POST') return json({ error: 'Yöntem desteklenmiyor' }, 405);
     const isSync = url.pathname.startsWith('/api/es/');
-    if (isSync && !env.SYNC) return json({ error: 'Bulut eşitleme yapılandırılmamış' }, 503);
-    if (!isSync && !env.ANTHROPIC_API_KEY) return json({ error: 'Sunucu yapılandırılmamış' }, 503);
+    const isPlus = url.pathname.startsWith('/api/plus/');
+    if ((isSync || isPlus) && !env.SYNC) return json({ error: 'Bulut eşitleme yapılandırılmamış' }, 503);
+    if (isPlus && !env.GOOGLE_SA) return json({ error: 'Ödeme doğrulama henüz yapılandırılmamış' }, 503);
+    if (!isSync && !isPlus && !env.ANTHROPIC_API_KEY) return json({ error: 'Yapay zekâ henüz yapılandırılmamış' }, 503);
 
     // Hız sınırı (IP + uç nokta)
     const ip = request.headers.get('CF-Connecting-IP') || '0.0.0.0';
@@ -66,6 +78,9 @@ export default {
 
     try {
       if (isSync) return json(await sync(url.pathname.slice(8), body, env));
+      if (isPlus) return json(await plus(url.pathname.slice(10), body, env));
+      // Yapay zekâ: geçerli Plus + günlük kota (+ isteğe bağlı cihaz bütünlüğü)
+      await requireAiAccess(body, env, url.pathname);
       if (url.pathname === '/api/sorular') return json(await questions(body, env));
       if (url.pathname === '/api/degerlendir') return json(await evaluate(body, env));
       if (url.pathname === '/api/metin') return json(await ocr(body, env));
@@ -298,6 +313,7 @@ async function sync(action, b, env) {
       const a = await auth(env, b);
       if (a.role !== 'ogrenci') throw bad('Yalnızca öğrenci cihazı kod üretebilir', 403);
       if ((a.fam.p || []).length >= 6) throw bad('En fazla 6 veli bağlanabilir', 400);
+      if ((a.fam.p || []).length >= 1 && !(await plusActive(env, b.familyId))) throw bad('İkinci veli telefonu için Sınav Hocası Plus gerekli.', 402);
       return { code: await issueCode(env, b.familyId), expiresIn: 600 };
     }
     case 'katil': { // veli: kodla bağlan
@@ -356,4 +372,156 @@ async function sync(action, b, env) {
     default:
       throw bad('Bulunamadı', 404);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Plus: Google Play aboneliği doğrulama
+// ---------------------------------------------------------------------------
+const PLUS_OK_STATES = ['SUBSCRIPTION_STATE_ACTIVE', 'SUBSCRIPTION_STATE_IN_GRACE_PERIOD'];
+const TOKEN_RE = /^[A-Za-z0-9._:-]{20,600}$/;
+function plusRequired(env) { return env.PLUS_REQUIRED !== 'hayir'; }
+const pkgName = (env) => env.PACKAGE_NAME || 'com.benim.sinavhocasi';
+const plusProducts = (env) => (env.PLUS_PRODUCTS || 'sinav_hocasi_plus').split(',').map((x) => x.trim()).filter(Boolean);
+
+function b64urlStr(s) { return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+let gToken = { scope: '', value: '', exp: 0 };
+async function googleAccess(env, scope) {
+  const now = Math.floor(Date.now() / 1000);
+  if (gToken.value && gToken.scope === scope && gToken.exp - 60 > now) return gToken.value;
+  let sa;
+  try { sa = JSON.parse(env.GOOGLE_SA); } catch { throw bad('Ödeme doğrulama anahtarı okunamadı', 503); }
+  const header = b64urlStr(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+  const claims = b64urlStr(JSON.stringify({ iss: sa.client_email, scope, aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 }));
+  const pem = String(sa.private_key || '').replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
+  const der = Uint8Array.from(atob(pem), (c) => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey('pkcs8', der, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
+  const sig = new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(header + '.' + claims)));
+  let bin = ''; sig.forEach((x) => { bin += String.fromCharCode(x); });
+  const jwt = header + '.' + claims + '.' + b64urlStr(bin);
+  const r = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=' + jwt });
+  if (!r.ok) throw bad('Google doğrulama hizmetine bağlanılamadı', 502);
+  const d = await r.json();
+  gToken = { scope, value: d.access_token, exp: now + (Number(d.expires_in) || 3000) };
+  return gToken.value;
+}
+
+async function googleSubscription(env, purchaseToken) {
+  const at = await googleAccess(env, 'https://www.googleapis.com/auth/androidpublisher');
+  const r = await fetch('https://androidpublisher.googleapis.com/androidpublisher/v3/applications/' + encodeURIComponent(pkgName(env)) + '/purchases/subscriptionsv2/tokens/' + encodeURIComponent(purchaseToken), { headers: { Authorization: 'Bearer ' + at } });
+  if (r.status === 404 || r.status === 400 || r.status === 410) throw bad('Satın alma bulunamadı', 404);
+  if (!r.ok) throw bad('Satın alma doğrulanamadı, biraz sonra tekrar dene', 502);
+  return r.json();
+}
+
+function readSub(g, env) {
+  const items = Array.isArray(g.lineItems) ? g.lineItems : [];
+  const mine = items.filter((li) => plusProducts(env).includes(li.productId));
+  const expiry = mine.reduce((m, li) => Math.max(m, Date.parse(li.expiryTime) || 0), 0);
+  return {
+    active: PLUS_OK_STATES.includes(g.subscriptionState) && mine.length > 0 && expiry > Date.now(),
+    expiry,
+    state: str(g.subscriptionState, 60),
+    product: mine[0] ? str(mine[0].productId, 60) : '',
+    acct: str(g.externalAccountIdentifiers && g.externalAccountIdentifiers.obfuscatedExternalAccountId, 64),
+    acknowledged: g.acknowledgementState === 'ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED',
+    test: !!g.testPurchase
+  };
+}
+
+async function acknowledge(env, product, purchaseToken) {
+  try {
+    const at = await googleAccess(env, 'https://www.googleapis.com/auth/androidpublisher');
+    await fetch('https://androidpublisher.googleapis.com/androidpublisher/v3/applications/' + encodeURIComponent(pkgName(env)) + '/purchases/subscriptions/' + encodeURIComponent(product) + '/tokens/' + encodeURIComponent(purchaseToken) + ':acknowledge', { method: 'POST', headers: { Authorization: 'Bearer ' + at, 'Content-Type': 'application/json' }, body: '{}' });
+  } catch { /* bir sonraki doğrulamada tekrar denenir */ }
+}
+
+// Plus etkin mi? Süresi geçmişse Google'dan yeniden sorar (yenilenen abonelikler için)
+async function plusActive(env, familyId) {
+  if (!env.SYNC || !ID_RE.test(familyId || '')) return false;
+  const raw = await env.SYNC.get('ent:' + familyId);
+  if (!raw) return false;
+  const ent = JSON.parse(raw);
+  if (ent.expiry > Date.now()) return true;
+  if (!env.GOOGLE_SA) return false;
+  const subRaw = await env.SYNC.get('sub:' + ent.sub);
+  if (!subRaw) return false;
+  const sub = JSON.parse(subRaw);
+  if (Date.now() - (sub.checked || 0) < 10 * 60 * 1000) return false; // en fazla 10 dakikada bir sor
+  try {
+    const info = readSub(await googleSubscription(env, sub.token), env);
+    sub.expiry = info.expiry; sub.state = info.state; sub.checked = Date.now();
+    await env.SYNC.put('sub:' + ent.sub, JSON.stringify(sub));
+    for (const f of sub.families || []) await env.SYNC.put('ent:' + f, JSON.stringify({ sub: ent.sub, expiry: info.active ? info.expiry : 0 }));
+    return info.active;
+  } catch { return false; }
+}
+
+// Play Integrity: istek gerçek uygulamadan ve güvenilir cihazdan mı?
+async function checkIntegrity(env, token, expectedHash) {
+  if (env.INTEGRITY !== 'zorunlu') return true;
+  if (typeof token !== 'string' || token.length < 20 || token.length > 8000) throw bad('Cihaz doğrulaması gerekli. Uygulamayı Google Play’den güncelle.', 403);
+  const at = await googleAccess(env, 'https://www.googleapis.com/auth/playintegrity');
+  const r = await fetch('https://playintegrity.googleapis.com/v1/' + encodeURIComponent(pkgName(env)) + ':decodeIntegrityToken', { method: 'POST', headers: { Authorization: 'Bearer ' + at, 'Content-Type': 'application/json' }, body: JSON.stringify({ integrity_token: token }) });
+  if (!r.ok) throw bad('Cihaz doğrulanamadı', 403);
+  const p = (await r.json()).tokenPayloadExternal || {};
+  const req = p.requestDetails || {}, app = p.appIntegrity || {}, dev = p.deviceIntegrity || {};
+  const okApp = app.appRecognitionVerdict === 'PLAY_RECOGNIZED' && app.packageName === pkgName(env);
+  const okDev = Array.isArray(dev.deviceRecognitionVerdict) && dev.deviceRecognitionVerdict.includes('MEETS_DEVICE_INTEGRITY');
+  const okReq = req.requestPackageName === pkgName(env) && (!expectedHash || req.requestHash === expectedHash) && Math.abs(Date.now() - Number(req.timestampMillis || 0)) < 10 * 60 * 1000;
+  if (!okApp || !okDev || !okReq) throw bad('Bu cihaz ya da uygulama kopyası doğrulanamadı. Uygulamayı Google Play’den indir; değiştirilmiş (root’lu) cihazlarda Plus özellikleri çalışmaz.', 403);
+  return true;
+}
+
+async function requireAiAccess(b, env, path) {
+  const a = await auth(env, b).catch(() => null);
+  if (!a) throw bad('Yapay zekâ için önce uygulamayı veliyle eşleştir ve Plus’ı etkinleştir.', 402);
+  if (plusRequired(env) && !(await plusActive(env, b.familyId))) throw bad('Bu özellik Sınav Hocası Plus ile kullanılabilir.', 402);
+  await checkIntegrity(env, b.integrity, await sha(b.familyId + ':' + path));
+  const day = new Date().toISOString().slice(0, 10);
+  const qk = 'q:' + b.familyId + ':' + day;
+  const used = Number(await env.SYNC.get(qk)) || 0;
+  const limit = Number(env.DAILY_AI_LIMIT) || 200;
+  if (used >= limit) throw bad('Bugünkü yapay zekâ kullanım sınırına ulaşıldı. Yarın yeniden açılır.', 429);
+  await env.SYNC.put(qk, String(used + 1), { expirationTtl: 60 * 60 * 48 });
+}
+
+async function plus(action, b, env) {
+  if (action === 'durum') {
+    await auth(env, b);
+    const active = await plusActive(env, b.familyId);
+    const raw = await env.SYNC.get('ent:' + b.familyId);
+    return { plus: active, expiry: active && raw ? JSON.parse(raw).expiry : 0, required: plusRequired(env) };
+  }
+  if (action === 'dogrula') {
+    const token = str(b.purchaseToken, 600);
+    if (!TOKEN_RE.test(token)) throw bad('Geçersiz satın alma');
+    const acct = str(b.account, 64);
+    if (!/^[a-f0-9]{32,64}$/.test(acct)) throw bad('Geçersiz hesap');
+    const links = (Array.isArray(b.links) ? b.links : []).slice(0, 5);
+    if (!links.length) throw bad('Önce en az bir çocuğu bağla, sonra Plus’ı etkinleştir.');
+    const families = [];
+    for (const l of links) {
+      const a = await auth(env, { familyId: l && l.familyId, token: l && l.token }).catch(() => null);
+      if (a) families.push(l.familyId);
+    }
+    if (!families.length) throw bad('Bağlı çocuk bulunamadı', 404);
+    await checkIntegrity(env, b.integrity, await sha(acct + ':plus'));
+    const info = readSub(await googleSubscription(env, token), env);
+    if (!info.active) throw bad('Abonelik etkin görünmüyor (' + (info.state || 'bilinmiyor') + ').', 402);
+    // Satın alma, uygulamanın satın alırken verdiği hesap kimliğiyle eşleşmeli
+    if (info.acct !== acct) throw bad('Bu satın alma başka bir hesaba ait.', 409);
+    const key = await sha(token);
+    const existing = await env.SYNC.get('sub:' + key);
+    if (existing) {
+      const ex = JSON.parse(existing);
+      if (ex.acct && ex.acct !== acct) throw bad('Bu satın alma başka bir telefonda kullanılıyor.', 409);
+      (ex.families || []).filter((f) => !families.includes(f)).forEach((f) => families.push(f));
+    }
+    const fams = families.slice(-5);
+    await env.SYNC.put('sub:' + key, JSON.stringify({ token, acct, families: fams, expiry: info.expiry, state: info.state, product: info.product, checked: Date.now(), test: info.test }));
+    for (const f of fams) await env.SYNC.put('ent:' + f, JSON.stringify({ sub: key, expiry: info.expiry }));
+    if (!info.acknowledged) await acknowledge(env, info.product, token);
+    return { plus: true, expiry: info.expiry, families: fams.length };
+  }
+  throw bad('Bulunamadı', 404);
 }
