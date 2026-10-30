@@ -52,7 +52,9 @@ jobs:
       - name: Derle (test sürümü)
         if: steps.sign.outputs.signed != 'true'
         working-directory: android
-        run: ./gradlew --no-daemon assembleDebug
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee build.log
 
       - name: Derle (imzalı APK + AAB)
         if: steps.sign.outputs.signed == 'true'
@@ -62,7 +64,18 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: ./gradlew --no-daemon assembleRelease bundleRelease
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace assembleRelease bundleRelease 2>&1 | tee build.log
+
+      - name: Derleme hatasını özetle
+        if: failure()
+        working-directory: android
+        run: |
+          [ -f build.log ] || exit 0
+          msg=$(grep -E -A12 "What went wrong|error:|e: |Could not resolve|Could not find|FAILURE:" build.log | grep -v -E "^\s+at |^\s*$" | head -n 60 | cut -c1-300)
+          msg="${msg//'%'/'%25'}"; msg="${msg//$'\n'/'%0A'}"
+          echo "::error title=Derleme hatası::${msg}"
 
       - name: Dosyaları adlandır
         run: |
