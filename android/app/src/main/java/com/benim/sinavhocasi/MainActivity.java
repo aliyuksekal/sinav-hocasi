@@ -524,6 +524,15 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void setColors(boolean dark, String hex) {
+            if (!fromOurPage()) return;
+            final int color;
+            try { color = (hex != null && hex.matches("^#[0-9a-fA-F]{6}$")) ? Color.parseColor(hex) : (dark ? Color.rgb(6, 18, 41) : Color.rgb(230, 242, 254)); }
+            catch (Exception e) { return; }
+            ui.post(() -> { setBarsDark(dark); root.setBackgroundColor(color); if (web != null) web.setBackgroundColor(color); });
+        }
+
+        @JavascriptInterface
         public void saveFile(String name, String content) {
             if (!fromOurPage() || name == null || content == null || content.length() > 40 * 1024 * 1024) return;
             String safe = name.replaceAll("[^A-Za-z0-9._-]", "_");

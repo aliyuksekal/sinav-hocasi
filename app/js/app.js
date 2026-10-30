@@ -10,7 +10,7 @@
   'use strict';
 
   const E = window.SHEngine;
-  const VERSION = '1.1.0';
+  const VERSION = '1.2.0';
   const API_BASE = 'https://sinav-hocasi.aliyuksekal.workers.dev';
   const MB = 1024 * 1024;
   const LIMITS = { imageBytes: 30 * MB, pdfBytes: 250 * MB, materials: 120, textChars: 400000, sessions: 300, answerChars: 4000, nameChars: 120, titleChars: 80 };
@@ -95,7 +95,12 @@
     parent: [['circle', { cx: 12, cy: 7, r: 4 }], ['path', { d: 'M5.5 21a6.5 6.5 0 0 1 13 0' }], ['path', { d: 'M12 14v3' }]],
     cloud: [['path', { d: 'M17.5 19H8a6 6 0 1 1 5.7-7.9A4.5 4.5 0 1 1 17.5 19z' }]],
     link: [['path', { d: 'M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7' }], ['path', { d: 'M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7' }]],
-    target: [['circle', { cx: 12, cy: 12, r: 10 }], ['circle', { cx: 12, cy: 12, r: 6 }], ['circle', { cx: 12, cy: 12, r: 2 }]]
+    target: [['circle', { cx: 12, cy: 12, r: 10 }], ['circle', { cx: 12, cy: 12, r: 6 }], ['circle', { cx: 12, cy: 12, r: 2 }]],
+    plus: [['path', { d: 'M12 5v14M5 12h14' }]],
+    more: [['circle', { cx: 12, cy: 5, r: 1.6 }], ['circle', { cx: 12, cy: 12, r: 1.6 }], ['circle', { cx: 12, cy: 19, r: 1.6 }]],
+    clock: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'M12 7v5l3 2' }]],
+    ticket: [['path', { d: 'M9 11h6M9 15h4M7 3h10a2 2 0 0 1 2 2v14l-3-2-2 2-2-2-2 2-2-2-3 2V5a2 2 0 0 1 2-2z' }]],
+    wave: [['path', { d: 'M8 13V5.5a1.5 1.5 0 0 1 3 0V11M11 11V4.5a1.5 1.5 0 0 1 3 0V11M14 11V6a1.5 1.5 0 0 1 3 0v8a6 6 0 0 1-6 6h-1a6 6 0 0 1-5.2-3L3 13.7a1.5 1.5 0 0 1 2.4-1.8L8 15' }]]
   };
   function icon(name) {
     const svg = document.createElementNS(SVGNS, 'svg');
@@ -133,7 +138,8 @@
   // Kalıcı durum (localStorage) — okurken şemaya göre temizlenir
   // ======================================================================
   const KEY = 'sh:v1';
-  const DEFAULT_SETTINGS = { theme: 'auto', textSize: 'normal', name: '', ai: true, autoOcr: true, role: '', introDone: false };
+  const DEFAULT_SETTINGS = { theme: 'auto', accent: 'blue', textSize: 'normal', name: '', ai: true, autoOcr: true, role: '', introDone: false };
+  const ACCENTS = [['blue', 'Mavi'], ['teal', 'Turkuaz'], ['purple', 'Mor'], ['green', 'Yeşil'], ['orange', 'Turuncu']];
 
   function sanitizeQuestion(q, i) {
     if (!q || typeof q !== 'object') return null;
@@ -212,7 +218,8 @@
     const st = { v: 1, settings: Object.assign({}, DEFAULT_SETTINGS), sessions: [], drafts: {}, parent: null, days: {}, sync: null, children: [] };
     if (!raw || typeof raw !== 'object') return st;
     const s = raw.settings || {};
-    st.settings.theme = ['auto', 'light', 'dark'].includes(s.theme) ? s.theme : 'auto';
+    st.settings.theme = ['auto', 'light', 'dark', 'amoled'].includes(s.theme) ? s.theme : 'auto';
+    st.settings.accent = ['blue', 'teal', 'purple', 'green', 'orange'].includes(s.accent) ? s.accent : 'blue';
     st.settings.textSize = s.textSize === 'large' ? 'large' : 'normal';
     st.settings.name = clampStr(s.name, 30).replace(/[<>]/g, '');
     st.settings.ai = s.ai !== false;
@@ -399,6 +406,7 @@
       share: (text) => { try { window.SHNative.share(String(text)); return true; } catch (e) { return false; } },
       openExternal: (url) => { try { window.SHNative.openExternal(String(url)); return true; } catch (e) { return false; } },
       setTheme: (dark) => { try { window.SHNative.setTheme(!!dark); } catch (e) { /* yok say */ } },
+      setColors: (dark, hex) => { try { if (typeof window.SHNative.setColors !== 'function') return false; window.SHNative.setColors(!!dark, String(hex)); return true; } catch (e) { return false; } },
       shareImage: (b64, text) => { try { if (typeof window.SHNative.shareImage !== 'function') return false; window.SHNative.shareImage(String(b64), String(text)); return true; } catch (e) { return false; } }
     };
   })();
@@ -853,6 +861,7 @@
         start = document.hidden ? 0 : now;
       },
       stop() { this.flush(); sid = null; start = 0; },
+      live(id) { return id === sid && start ? Math.min(Date.now() - start, 20 * 60000) : 0; },
       resume() { if (sid && !start) start = Date.now(); }
     };
   })();
@@ -926,10 +935,16 @@
   const mq = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
   function applyTheme() {
     const t = S.settings.theme;
-    const dark = t === 'dark' || (t === 'auto' && mq && mq.matches);
-    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
-    if (S.settings.textSize === 'large') document.documentElement.setAttribute('data-size', 'large'); else document.documentElement.removeAttribute('data-size');
-    Native.setTheme(dark);
+    const black = t === 'amoled';
+    const dark = black || t === 'dark' || (t === 'auto' && mq && mq.matches);
+    const root = document.documentElement;
+    root.setAttribute('data-theme', dark ? 'dark' : 'light');
+    if (black) root.setAttribute('data-black', '1'); else root.removeAttribute('data-black');
+    if (S.settings.accent && S.settings.accent !== 'blue') root.setAttribute('data-accent', S.settings.accent); else root.removeAttribute('data-accent');
+    if (S.settings.textSize === 'large') root.setAttribute('data-size', 'large'); else root.removeAttribute('data-size');
+    const bg = getComputedStyle(root).getPropertyValue('--bg-top').trim();
+    if (!Native.setColors(dark, /^#[0-9a-f]{6}$/i.test(bg) ? bg : '')) Native.setTheme(dark);
+    document.querySelectorAll('meta[name="theme-color"]').forEach((m) => m.setAttribute('content', bg || (dark ? '#061229' : '#e6f2fe')));
   }
   if (mq && mq.addEventListener) mq.addEventListener('change', applyTheme);
 
@@ -964,6 +979,7 @@
     const r = route();
     const view = $('#view');
     clearInterval(pollTimer);
+    if (fabEl) fabEl.hidden = true;
     if (r.name !== 'sinav') Timer.stop();
     if (r.name !== 'veli') parentUnlocked = false; // Veli sekmesinden çıkınca panel yeniden kilitlenir
     let node;
@@ -1049,54 +1065,67 @@
   // ======================================================================
   // EKRAN: Ana sayfa
   // ======================================================================
+  function dayLabel(t) {
+    const d0 = new Date(); d0.setHours(0, 0, 0, 0);
+    const diff = Math.floor((d0 - new Date(t).setHours(0, 0, 0, 0)) / 864e5);
+    return diff <= 0 ? 'Bugün' : diff === 1 ? 'Dün' : fmtDate(t);
+  }
+
   function viewHome() {
     const name = S.settings.name;
     const real = realSessions();
     const active = [...S.sessions].reverse().find((s) => !sessionStats(s).done);
     const withText = MATS.filter((m) => m.text);
-    const todayMs = S.days[dayKey(Date.now())] || 0;
-    const todayAnswered = real.reduce((a, s) => a + s.questions.filter((q) => s.answers[q.id] && s.answers[q.id].eval && dayKey(s.answers[q.id].at) === dayKey(Date.now())).length, 0);
     const t = totals(real);
+    const lastDone = [...real].reverse().find((s) => sessionStats(s).answered);
 
-    let msg, primary;
-    if (active) {
-      const st = sessionStats(active);
-      msg = '“' + active.title + '” çalışmanda ' + st.answered + '/' + st.total + ' soru tamam. Kaldığın yerden devam edelim mi?';
-      primary = h('button', { class: 'btn btn-primary btn-block', type: 'button', on: { click: () => go('sinav/' + active.id) } }, icon('play'), 'Kaldığın yerden devam et');
-    } else if (withText.length) {
-      msg = withText.length + ' materyalin soru üretmeye hazır. Bugün hangi konuyu çalışalım?';
-      primary = h('button', { class: 'btn btn-primary btn-block', type: 'button', on: { click: () => go('calis') } }, icon('edit'), 'Çalışmaya başla');
-    } else if (MATS.length) {
-      msg = 'Eklediğin materyalleri metne dönüştürürsen senin için sorular hazırlarım.';
-      primary = h('button', { class: 'btn btn-primary btn-block', type: 'button', on: { click: () => go('materyaller') } }, icon('scan'), 'Materyalleri metne dönüştür');
-    } else {
-      msg = 'Ders kitabının sayfasını çek ya da PDF ekle; konuyu senin kitabından soralım.';
-      primary = h('button', { class: 'btn btn-primary btn-block', type: 'button', on: { click: () => go('materyaller') } }, icon('camera'), 'Materyal ekle');
-    }
+    let sub;
+    if (active) { const st = sessionStats(active); sub = '“' + active.title + '” çalışmanda ' + st.answered + '/' + st.total + ' soru tamam.'; }
+    else if (real.length) sub = 'Bugün de harika bir adım atıyorsun!';
+    else if (withText.length) sub = withText.length + ' materyalin soru üretmeye hazır.';
+    else if (MATS.length) sub = 'Materyallerini metne dönüştür, soruları hazırlayayım.';
+    else sub = 'Kitabının sayfasını çek, sana özel sorular hazırlayayım.';
+
+    const score = h('button', { class: 'score-card', type: 'button', on: { click: () => go('ilerleme') } },
+      ring(t.avg || 0, 84, { accent: true, prefix: '%', label: 'Genel başarı' }),
+      h('span', {}, h('b', { text: 'Genel Başarı Oranı' }), h('small', { text: t.answered ? fmtNum(t.answered) + ' soru · ' + fmtMin(t.ms) + ' çalışma' : 'İlk çalışmanı bitirince burada görünür' })),
+      icon('right'));
+
+    const tile = (cls, ic, title, subText, onClick) => h('button', { class: 'tile ' + cls, type: 'button', on: { click: onClick } }, h('span', { class: 'ic' }, icon(ic)), h('span', {}, h('b', { text: title }), h('small', { text: subText })));
+    const tiles = h('div', { class: 'tiles' },
+      tile('t-green', 'book', 'Materyallerim', MATS.length ? MATS.length + ' materyal' : 'Ekle', () => go('materyaller')),
+      tile('t-purple', 'edit', 'Çalış', active ? 'Devam et' : 'Yeni çalışma', () => go(active ? 'sinav/' + active.id : 'calis')),
+      tile('t-orange', 'ticket', 'Sınav Kâğıdı', lastDone ? 'Son sonuç' : 'Yeni sınav', () => go(lastDone ? 'sonuc/' + lastDone.id : 'calis')),
+      tile('t-blue', 'chart', 'İlerleme', 'Sonuçlar', () => go('ilerleme')));
+
+    const recent = [...real].reverse().slice(0, 4);
+    const activity = recent.length ? h('div', {},
+      h('div', { class: 'section-head' }, h('h2', { text: 'Son Aktiviteler' }), h('button', { class: 'link-btn', type: 'button', text: 'Tümü', on: { click: () => go('ilerleme') } })),
+      h('div', { class: 'activity' }, recent.map((s) => {
+        const st = sessionStats(s);
+        return h('button', { class: 'act-item', type: 'button', on: { click: () => go(st.done ? 'sonuc/' + s.id : 'sinav/' + s.id) } },
+          h('span', { class: 'ic' }, icon('edit')),
+          h('span', { css: { 'min-width': '0' } }, h('b', { text: s.title + (s.grade !== 'Diğer' ? ' · ' + s.grade + '. Sınıf' : '') }), h('small', { text: dayLabel(s.createdAt) + ' · ' + st.answered + ' soru' })),
+          st.avg === null ? h('span', {}) : h('span', { class: 'chip ' + scoreClass(st.avg), text: '%' + st.avg }),
+          icon('right'));
+      }))) : null;
 
     const steps = h('ol', { class: 'steps' },
       h('li', { class: MATS.length ? 'done' : '' }, h('div', {}, h('b', { text: 'Materyal ekle' }), h('p', { class: 'muted small', text: 'Kitap sayfasının fotoğrafını çek, PDF seç ya da MEB kitabını indir.' }))),
       h('li', { class: withText.length ? 'done' : '' }, h('div', {}, h('b', { text: 'Metne dönüştür' }), h('p', { class: 'muted small', text: 'Hoca sayfadaki yazıyı okur; istersen düzeltebilirsin.' }))),
       h('li', { class: real.length ? 'done' : '' }, h('div', {}, h('b', { text: 'Soruları kendi cümlelerinle cevapla' }), h('p', { class: 'muted small', text: 'Her cevaba puan ve “neyi geliştirebilirsin” notu gelir.' }))));
 
-    const recent = MATS.slice(0, 3);
     return h('div', {},
-      h('section', { class: 'hoca' },
-        h('div', { class: 'hoca-face' }, h('img', { src: 'icons/mark-144.png', alt: 'Sınav Hocası baykuşu', width: 76, height: 76 })),
-        h('div', { class: 'bubble' }, h('h1', { text: greet() + (name ? ', ' + name : '') + '!' }), h('p', { text: msg }))),
-      h('div', { class: 'hero-actions' }, primary,
-        h('button', { class: 'btn btn-secondary btn-block', type: 'button', on: { click: () => go('ilerleme') } }, 'İlerlemem')),
-      h('div', { class: 'today', 'aria-label': 'Bugünün özeti' },
-        h('div', {}, h('b', { text: fmtNum(todayAnswered) }), h('span', { text: 'bugün çözülen' })),
-        h('div', {}, h('b', { text: fmtMin(todayMs) }), h('span', { text: 'bugün çalışma' })),
-        h('div', {}, h('b', { text: t.avg === null ? '–' : '%' + t.avg }), h('span', { text: 'genel başarı' }))),
+      h('section', { class: 'greet' }, h('h1', {}, 'Merhaba', name ? h('span', { text: ', ' + name }) : null, ' 👋'), h('p', { text: sub })),
+      score,
+      active ? h('button', { class: 'btn btn-primary btn-block', type: 'button', css: { 'margin-top': '14px' }, on: { click: () => go('sinav/' + active.id) } }, icon('play'), 'Kaldığın yerden devam et') : null,
+      tiles,
+      activity,
       !real.length ? h('div', {}, h('div', { class: 'section-head' }, h('h2', { text: 'Nasıl çalışır?' })), h('div', { class: 'panel' }, steps)) : null,
       !real.length ? h('div', { class: 'panel tight', css: { 'margin-top': '12px' } },
         h('div', { class: 'row spread' }, h('div', {}, h('b', { text: 'Önce denemek ister misin?' }), h('p', { class: 'muted small', text: 'Hazır bir Fen konusu üzerinde akışı dene. Sonuçlar “Demo” olarak işaretlenir.' })),
           h('button', { class: 'btn btn-soft btn-sm', type: 'button', text: 'Demoyu aç', on: { click: startDemo } }))) : null,
-      h('div', { css: { 'margin-top': '16px' } }, shareAppCard()),
-      recent.length ? h('div', {}, h('div', { class: 'section-head' }, h('h2', { text: 'Son materyaller' }), h('button', { class: 'link-btn', type: 'button', text: 'Tümü', on: { click: () => go('materyaller') } })), h('div', { class: 'mat-list' }, recent.map(materialCard))) : null
-    );
+      h('div', { css: { 'margin-top': '16px' } }, shareAppCard()));
   }
 
   async function startDemo() {
@@ -1115,25 +1144,50 @@
     try { if (el.showPicker) el.showPicker(); else el.click(); } catch (e) { el.click(); }
   }
 
+  let matFilter = 'all';
+  const FILTERS = [['all', 'Tümü'], ['pdf', 'PDF'], ['image', 'Görsel'], ['text', 'Metin']];
+  function addOptions(close) {
+    const run = (fn) => () => { if (close) close(); setTimeout(fn, 60); };
+    const item = (ic, title, sub, fn) => h('button', { type: 'button', on: { click: run(fn) } }, h('span', { class: 'ic' }, icon(ic)), h('span', {}, title, h('small', { text: sub })));
+    return h('div', { class: 'menu-list' },
+      item('camera', 'Fotoğraf çek', 'Kitap sayfasını kamerayla çek', () => pick('inCamera')),
+      item('image', 'Galeriden seç', 'Birden fazla fotoğraf seçebilirsin', () => pick('inGallery')),
+      item('pdf', 'PDF ekle', 'Bir ya da daha fazla PDF', () => pick('inPdf')),
+      item('text', 'Metin yapıştır', 'Not ya da kopyaladığın yazı', openPasteSheet),
+      item('book', 'MEB ders kitabı indir', Native.can('books') ? 'Güncel kitabı resmî siteden uygulamaya indir' : 'Güncel kitapları resmî siteden bul ve ekle', openBooksSheet));
+  }
+  function openAddSheet() { openSheet('Materyal ekle', (b, close) => b.append(addOptions(close))); }
+
   function viewMaterials() {
-    const tiles = h('div', { class: 'add-grid' },
-      h('button', { class: 'add-tile', type: 'button', on: { click: () => pick('inCamera') } }, h('span', { class: 'ic' }, icon('camera')), h('b', { text: 'Fotoğraf çek' }), h('small', { text: 'Kitap sayfasını kamerayla çek' })),
-      h('button', { class: 'add-tile', type: 'button', on: { click: () => pick('inGallery') } }, h('span', { class: 'ic' }, icon('image')), h('b', { text: 'Galeriden seç' }), h('small', { text: 'Birden fazla fotoğraf seçebilirsin' })),
-      h('button', { class: 'add-tile', type: 'button', on: { click: () => pick('inPdf') } }, h('span', { class: 'ic' }, icon('pdf')), h('b', { text: 'PDF ekle' }), h('small', { text: 'Bir ya da daha fazla PDF' })),
-      h('button', { class: 'add-tile', type: 'button', on: { click: openPasteSheet } }, h('span', { class: 'ic' }, icon('text')), h('b', { text: 'Metin yapıştır' }), h('small', { text: 'Not ya da kopyaladığın yazı' })),
-      h('button', { class: 'add-tile wide', type: 'button', on: { click: openBooksSheet } }, h('span', { class: 'ic' }, icon('book')),
-        h('div', {}, h('b', { text: 'MEB ders kitabı indir' }), h('small', { css: { display: 'block' }, text: Native.can('books') ? 'Güncel kitabı resmî siteden uygulamanın içine indir' : 'Güncel kitapları resmî siteden bul ve ekle' })), icon('right')));
-
-    const list = MATS.length
-      ? h('div', { class: 'mat-list' }, MATS.map(materialCard))
-      : h('div', { class: 'empty' }, h('b', { text: 'Henüz materyal yok' }), h('p', { text: 'Yukarıdan kitap sayfası fotoğrafı, PDF ya da metin ekleyerek başla.' }));
-
+    const counts = { all: MATS.length, pdf: 0, image: 0, text: 0 };
+    MATS.forEach((m) => { counts[m.kind]++; });
+    if (!counts[matFilter]) matFilter = 'all';
+    const shown = MATS.filter((m) => matFilter === 'all' || m.kind === matFilter);
+    const filters = h('div', { class: 'filters', role: 'group', 'aria-label': 'Türe göre süz' }, FILTERS.filter(([k]) => k === 'all' || counts[k]).map(([k, label]) =>
+      h('button', { type: 'button', 'aria-pressed': String(matFilter === k), text: label + ' (' + counts[k] + ')', on: { click: () => { matFilter = k; render(); } } })));
+    showFab(true);
+    if (!MATS.length) {
+      return h('div', {},
+        h('div', { class: 'page-head' }, h('h1', { text: 'Materyallerim' })),
+        h('div', { class: 'empty', css: { 'margin-bottom': '14px' } }, h('b', { text: 'Henüz materyal yok' }), h('p', { text: 'Kitap sayfasının fotoğrafını çek, PDF ekle ya da güncel MEB kitabını indir.' })),
+        h('div', { class: 'panel', css: { padding: '8px' } }, addOptions()),
+        DB.memory ? h('div', { css: { 'margin-top': '12px' } }, notice('Bu tarayıcı dosya saklamaya izin vermiyor; eklediklerin sayfa kapanınca silinir.')) : null);
+    }
     return h('div', {},
-      h('div', { class: 'row spread', css: { margin: '8px 0 14px' } }, h('h1', { text: 'Materyaller' }), MATS.length ? h('span', { class: 'chip', text: MATS.length + ' dosya' }) : null),
-      tiles,
-      h('div', { class: 'section-head' }, h('h2', { text: 'Eklediklerin' }), MATS.length > 1 ? h('button', { class: 'link-btn', type: 'button', text: 'Listeyi temizle', on: { click: clearAllMaterials } }) : null),
-      list,
+      h('div', { class: 'page-head' }, h('h1', { text: 'Materyallerim' }), h('span', { class: 'chip info', text: MATS.length + ' dosya' })),
+      MATS.length > 1 ? filters : null,
+      h('div', { class: 'mat-list' }, shown.map(materialCard)),
+      MATS.length > 1 ? h('div', { css: { 'text-align': 'center', 'margin-top': '8px' } }, h('button', { class: 'link-btn', type: 'button', text: 'Listeyi temizle', on: { click: clearAllMaterials } })) : null,
       DB.memory ? h('div', { css: { 'margin-top': '12px' } }, notice('Bu tarayıcı dosya saklamaya izin vermiyor; eklediklerin sayfa kapanınca silinir.')) : null);
+  }
+
+  let fabEl = null;
+  function showFab(on) {
+    if (!fabEl) {
+      fabEl = h('button', { class: 'fab', type: 'button', 'aria-label': 'Materyal ekle', on: { click: openAddSheet } }, icon('plus'));
+      document.body.appendChild(fabEl);
+    }
+    fabEl.hidden = !on;
   }
 
   async function clearAllMaterials() {
@@ -1152,20 +1206,31 @@
     return h('span', { class: 'chip warn', text: 'Metin yok' });
   }
 
+  function materialActions(m) {
+    openSheet(m.name, (b, close) => {
+      const item = (ic, title, fn, danger) => h('button', { type: 'button', class: danger ? 'danger' : '', on: { click: () => { close(); setTimeout(fn, 60); } } }, h('span', { class: 'ic' }, icon(ic)), h('span', { text: title }));
+      b.append(h('div', { class: 'menu-list' },
+        item('edit', 'Aç ve düzenle', () => openMaterialSheet(m.id)),
+        m.kind !== 'text' && !busy.get(m.id) ? item('scan', m.text ? 'Metni yeniden çıkar' : 'Metne dönüştür', () => (m.kind === 'pdf' && m.pages > 30 ? openMaterialSheet(m.id) : extract(m.id).catch(() => {}))) : null,
+        m.text ? item('play', 'Bununla çalış', () => { preselect = [m.id]; go('calis'); }) : null,
+        item('trash', 'Kaldır', async () => { if (await confirmBox('Kaldırılsın mı?', '“' + m.name + '” bu cihazdan silinecek.', 'Kaldır', true)) { await removeMaterial(m.id); toast('Materyal kaldırıldı.'); render(); } }, true)));
+    });
+  }
+
   function materialCard(m) {
-    const kindLabel = m.kind === 'pdf' ? 'PDF' : m.kind === 'image' ? 'FOTO' : 'METİN';
-    const thumb = h('div', { class: 'thumb' }, m.thumb ? h('img', { src: m.thumb, alt: '' }) : icon(m.kind === 'pdf' ? 'pdf' : m.kind === 'text' ? 'text' : 'image'), h('span', { class: 'tag', text: kindLabel }));
+    const kindLabel = m.kind === 'pdf' ? 'PDF' : m.kind === 'image' ? 'Görsel' : 'Metin';
+    const fic = m.kind === 'image' && m.thumb
+      ? h('div', { class: 'file-ic f-img' }, h('img', { src: m.thumb, alt: '' }))
+      : h('div', { class: 'file-ic ' + (m.kind === 'pdf' ? 'f-pdf' : m.kind === 'image' ? 'f-img' : 'f-txt') }, icon(m.kind === 'pdf' ? 'pdf' : m.kind === 'image' ? 'image' : 'text'));
     const b = busy.get(m.id);
-    const meta = h('div', { class: 'mat-meta' }, textStatusChip(m),
-      m.kind === 'pdf' && m.pages ? h('span', { class: 'chip', text: m.pages + ' sayfa' }) : null,
-      m.kind !== 'text' ? h('span', { class: 'chip', text: fmtSize(m.size) }) : null,
-      m.origin === 'meb' ? h('span', { class: 'chip info', text: 'MEB' }) : null);
-    const actions = h('div', { class: 'mat-actions' },
-      h('button', { class: 'btn btn-secondary btn-sm', type: 'button', text: 'Aç', 'aria-label': m.name + ' materyalini aç', on: { click: () => openMaterialSheet(m.id) } }),
-      !m.text && m.kind !== 'text' && !b ? h('button', { class: 'btn btn-soft btn-sm', type: 'button', on: { click: () => (m.kind === 'pdf' && m.pages > 30 ? openMaterialSheet(m.id) : extract(m.id).catch(() => {})) } }, icon('scan'), 'Metne dönüştür') : null,
-      h('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': m.name + ' materyalini kaldır', on: { click: async () => { if (await confirmBox('Kaldırılsın mı?', '“' + m.name + '” bu cihazdan silinecek.', 'Kaldır', true)) { await removeMaterial(m.id); toast('Materyal kaldırıldı.'); render(); } } } }, icon('trash')));
+    const sub = [kindLabel, m.kind === 'pdf' && m.pages ? m.pages + ' sayfa' : null, m.kind !== 'text' ? fmtSize(m.size) : null, new Date(m.addedAt).toLocaleDateString('tr-TR')].filter(Boolean).join(' · ');
+    const meta = h('div', { class: 'mat-meta' }, textStatusChip(m), m.origin === 'meb' ? h('span', { class: 'chip info', text: 'MEB' }) : null);
     const prog = b ? h('div', { class: 'progress-line' }, h('i', { css: { width: (b.pct || 3) + '%' } })) : null;
-    return h('article', { class: 'mat', 'data-mat': m.id }, thumb, h('div', { class: 'grow' }, h('div', { class: 'mat-name', text: m.name }), meta, prog, actions));
+    return h('article', { class: 'mat', 'data-mat': m.id },
+      fic,
+      h('button', { class: 'mat-body', type: 'button', 'aria-label': m.name + ' materyalini aç', on: { click: () => openMaterialSheet(m.id) } },
+        h('div', { class: 'mat-name', text: m.name }), h('div', { class: 'mat-sub', text: sub }), meta, prog),
+      h('button', { class: 'kebab', type: 'button', 'aria-label': m.name + ' için seçenekler', on: { click: () => materialActions(m) } }, icon('more')));
   }
 
   function updateBusyUI(id, finished) {
@@ -1347,15 +1412,16 @@
   // ======================================================================
   // EKRAN: Sınav kâğıdı
   // ======================================================================
-  function ring(score, size) {
-    size = size || 84;
-    const r = size / 2 - 7, c = 2 * Math.PI * r;
-    const color = score >= 75 ? 'var(--ok)' : score >= 45 ? 'var(--amber)' : 'var(--bad)';
+  function ring(score, size, opts) {
+    size = size || 84; opts = opts || {};
+    const sw = size > 120 ? 12 : 8;
+    const r = size / 2 - sw / 2 - 2, c = 2 * Math.PI * r;
+    const color = opts.accent ? 'var(--accent)' : score >= 75 ? 'var(--ok)' : score >= 45 ? 'var(--amber)' : 'var(--bad)';
     const svg = svgEl('svg', { viewBox: '0 0 ' + size + ' ' + size, 'aria-hidden': 'true' });
-    svg.append(svgEl('circle', { cx: size / 2, cy: size / 2, r, fill: 'none', stroke: 'var(--surface-2)', 'stroke-width': 8 }));
-    const arc = svgEl('circle', { cx: size / 2, cy: size / 2, r, fill: 'none', stroke: color, 'stroke-width': 8, 'stroke-linecap': 'round', 'stroke-dasharray': c, 'stroke-dashoffset': c * (1 - score / 100) });
-    svg.append(arc);
-    return h('div', { class: 'ring', role: 'img', 'aria-label': 'Puan ' + score }, svg, h('b', { text: score }));
+    svg.append(svgEl('circle', { cx: size / 2, cy: size / 2, r, fill: 'none', stroke: 'var(--surface-2)', 'stroke-width': sw }));
+    svg.append(svgEl('circle', { cx: size / 2, cy: size / 2, r, fill: 'none', stroke: color, 'stroke-width': sw, 'stroke-linecap': 'round', 'stroke-dasharray': c, 'stroke-dashoffset': c * (1 - Math.max(0, Math.min(100, score)) / 100) }));
+    const label = h('b', {}, opts.prefix ? opts.prefix + score : String(score), opts.suffix ? h('small', { text: opts.suffix }) : null);
+    return h('div', { class: 'ring', role: 'img', 'aria-label': (opts.label || 'Puan') + ' ' + score }, svg, label);
   }
 
   function gradeCard(q, a, onRetry, onNext, isLast) {
@@ -1450,16 +1516,24 @@
     return wrap;
   }
 
+  const mmss = (ms) => { const sec = Math.floor(ms / 1000); const m = Math.floor(sec / 60); return (m >= 60 ? Math.floor(m / 60) + ':' + String(m % 60).padStart(2, '0') : String(m).padStart(2, '0')) + ':' + String(sec % 60).padStart(2, '0'); };
   function examHead(s, st) {
-    return h('div', { class: 'exam-head' },
-      h('div', { class: 'grow' }, h('h2', { text: s.title }), h('div', { class: 'row wrap', css: { 'margin-top': '4px' } },
-        h('span', { class: 'chip', text: s.subject }),
-        s.source === 'demo' ? h('span', { class: 'chip demo', text: 'Demo örneği' }) : null,
-        h('span', { class: 'chip ' + (s.engine === 'ai' ? 'info' : ''), text: s.engine === 'ai' ? 'Yapay zekâ soruları' : 'Cihazda üretildi' }))),
-      h('button', { class: 'btn btn-ghost btn-sm', type: 'button', text: st.answered === st.total ? 'Sonuç' : 'Bitir', on: { click: async () => {
-        if (st.answered < st.total && !(await confirmBox('Çalışma bitirilsin mi?', 'Cevaplanmayan ' + (st.total - st.answered) + ' soru puana katılmaz. İstersen daha sonra devam edebilirsin.', 'Bitir'))) return;
-        s.finishedAt = s.finishedAt || Date.now(); save(true); go('sonuc/' + s.id);
-      } } }));
+    const timer = h('span', { class: 'timer', id: 'examTimer', 'aria-label': 'Çalışma süresi' }, icon('clock'), h('span', { text: mmss(s.activeMs + Timer.live(s.id)) }));
+    clearInterval(pollTimer);
+    pollTimer = setInterval(() => { const el = document.getElementById('examTimer'); if (el && el.lastChild) el.lastChild.textContent = mmss(s.activeMs + Timer.live(s.id)); }, 1000);
+    return h('div', {},
+      h('div', { class: 'exam-bar' },
+        h('span', { class: 'row' }, icon('refresh'), 'Soru ' + (s.idx + 1) + ' / ' + s.questions.length),
+        timer),
+      h('div', { class: 'exam-head' },
+        h('div', { class: 'grow' }, h('h2', { text: s.title }), h('div', { class: 'row wrap', css: { 'margin-top': '6px', gap: '6px' } },
+          h('span', { class: 'chip', text: s.subject }),
+          s.source === 'demo' ? h('span', { class: 'chip demo', text: 'Demo örneği' }) : null,
+          h('span', { class: 'chip ' + (s.engine === 'ai' ? 'info' : ''), text: s.engine === 'ai' ? 'Yapay zekâ soruları' : 'Cihazda üretildi' }))),
+        h('button', { class: 'btn btn-soft btn-sm', type: 'button', text: st.answered === st.total ? 'Sonuç' : 'Bitir', on: { click: async () => {
+          if (st.answered < st.total && !(await confirmBox('Çalışma bitirilsin mi?', 'Cevaplanmayan ' + (st.total - st.answered) + ' soru puana katılmaz. İstersen daha sonra devam edebilirsin.', 'Bitir'))) return;
+          s.finishedAt = s.finishedAt || Date.now(); save(true); go('sonuc/' + s.id);
+        } } })));
   }
 
   // ======================================================================
@@ -1470,23 +1544,40 @@
     if (!s) return viewProgress();
     const st = sessionStats(s);
     const weak = s.questions.filter((q) => { const a = s.answers[q.id]; return !a || !a.eval || a.eval.score < 60; });
-    return h('div', { class: 'stack-lg' },
-      h('section', { class: 'hoca' },
-        h('div', { class: 'hoca-face' }, h('img', { src: 'icons/mark-144.png', alt: '', width: 76, height: 76 })),
-        h('div', { class: 'bubble' }, h('h1', { text: st.avg === null ? 'Çalışma kaydedildi' : st.avg >= 75 ? 'Tebrikler!' : st.avg >= 45 ? 'İyi gidiyorsun!' : 'Pes etmek yok!' }),
-          h('p', { text: st.answered + ' sorunun ortalaması ' + (st.avg === null ? '–' : '%' + st.avg) + '. ' + (weak.length ? weak.length + ' soruyu tekrar çalışmanı öneririm.' : 'Hepsini başarıyla geçtin.') }))),
-      h('div', { class: 'row' }, ring(st.avg || 0, 96), h('div', {}, h('b', { text: s.title }), h('p', { class: 'muted small', text: s.subject + ', ' + (s.grade === 'Diğer' ? '' : s.grade + '. sınıf, ') + fmtMin(s.activeMs) + ' çalışma' }), s.source === 'demo' ? h('span', { class: 'chip demo', text: 'Demo örneği, ilerlemeye sayılmaz' }) : null)),
-      h('div', { class: 'hist' }, s.questions.map((q, i) => {
-        const a = s.answers[q.id];
-        const sc = a && a.eval ? a.eval.score : null;
-        return h('button', { class: 'hist-item', type: 'button', on: { click: () => { s.idx = i; save(); go('sinav/' + s.id); } } },
-          h('div', { class: 'grow' }, h('div', { class: 'xs muted', text: (i + 1) + '. soru' }), h('div', { text: clampStr(q.q, 110) })),
-          h('span', { class: 'score-pill chip ' + (sc === null ? '' : scoreClass(sc)), text: sc === null ? '–' : sc }));
-      })),
-      h('div', { class: 'btn-row' },
-        weak.length ? h('button', { class: 'btn btn-primary', type: 'button', on: { click: () => retryWeak(s, weak) } }, icon('refresh'), 'Zayıf soruları tekrar çalış') : null,
-        st.answered ? h('button', { class: 'btn btn-soft', type: 'button', on: { click: () => shareResult(s) } }, icon('share'), 'Sonucumu paylaş') : null,
-        h('button', { class: 'btn btn-secondary', type: 'button', text: 'Ana sayfa', on: { click: () => go('ana') } })));
+    const cnt = { dogru: 0, kismen: 0, gelistir: 0, bos: 0 };
+    s.questions.forEach((q) => { const a = s.answers[q.id]; if (a && a.eval) cnt[a.eval.verdict]++; else cnt.bos++; });
+    const n = s.questions.length;
+    const pct = (k) => '%' + Math.round((cnt[k] / n) * 100);
+    const avg = st.avg || 0;
+    const row = (cls, ic, label, k) => h('div', { class: 'res-row ' + cls }, h('span', { class: 'ic' }, icon(ic)), h('span', { text: label }), h('b', { text: cnt[k] }), h('em', { text: pct(k) }));
+    const details = h('div', { class: 'hist', hidden: true, css: { 'margin-top': '14px' } }, s.questions.map((q, i) => {
+      const a = s.answers[q.id];
+      const sc = a && a.eval ? a.eval.score : null;
+      return h('button', { class: 'hist-item', type: 'button', on: { click: () => { s.idx = i; save(); go('sinav/' + s.id); } } },
+        h('div', { class: 'grow' }, h('div', { class: 'xs muted', text: (i + 1) + '. soru' }), h('div', { text: clampStr(q.q, 110) })),
+        h('span', { class: 'score-pill chip ' + (sc === null ? '' : scoreClass(sc)), text: sc === null ? '–' : sc }));
+    }));
+    const detBtn = h('button', { class: 'btn btn-secondary btn-block', type: 'button', text: 'Detayları gör' });
+    detBtn.addEventListener('click', () => { details.hidden = !details.hidden; detBtn.textContent = details.hidden ? 'Detayları gör' : 'Detayları gizle'; if (!details.hidden) details.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+    return h('div', {},
+      h('section', { class: 'res-hero' },
+        ring(avg, 176, { accent: true, suffix: '/100', label: 'Ortalama puan' }),
+        h('h1', { text: st.answered === 0 ? 'Çalışma kaydedildi' : avg >= 75 ? 'Tebrikler!' : avg >= 45 ? 'İyi gidiyorsun!' : 'Pes etmek yok!' }),
+        h('p', { text: avg >= 75 ? 'Harika bir performans gösterdin.' : weak.length ? weak.length + ' soruyu tekrar çalışmanı öneririm.' : 'Biraz daha tekrarla zirve senin.' }),
+        h('div', { class: 'row', css: { 'justify-content': 'center', 'margin-top': '10px', gap: '6px' } },
+          h('span', { class: 'chip', text: s.title }), h('span', { class: 'chip', text: fmtMin(s.activeMs) }),
+          s.source === 'demo' ? h('span', { class: 'chip demo', text: 'Demo' }) : null)),
+      h('div', { class: 'res-stats' },
+        row('rr-ok', 'check', 'Doğru', 'dogru'),
+        row('rr-mid', 'info', 'Kısmen doğru', 'kismen'),
+        row('rr-bad', 'x', 'Geliştirilmeli', 'gelistir'),
+        row('rr-empty', 'clock', 'Boş', 'bos')),
+      h('div', { class: 'stack', css: { 'margin-top': '16px' } },
+        detBtn,
+        h('button', { class: 'btn btn-primary btn-block', type: 'button', on: { click: () => retryWeak(s, weak.length ? weak : s.questions) } }, icon('refresh'), weak.length ? 'Zayıf soruları tekrar çöz' : 'Tekrar dene'),
+        st.answered ? h('button', { class: 'btn btn-soft btn-block', type: 'button', on: { click: () => shareResult(s) } }, icon('share'), 'Sonucumu paylaş') : null,
+        h('button', { class: 'btn btn-ghost btn-block', type: 'button', text: 'Ana sayfaya dön', on: { click: () => go('ana') } })),
+      details);
   }
 
   function retryWeak(s, weak) {
@@ -2052,7 +2143,7 @@
   // İlk açılış: tanıtım ve rol seçimi
   // ======================================================================
   const SLIDES = [
-    { art: 'logo', title: 'Sınav Hocası’na hoş geldin', text: 'Ders kitabındaki konudan sana özel sorular hazırlayan, cevabını değerlendiren çalışma arkadaşın.' },
+    { art: 'logo', title: 'Sınav Hocası', text: 'Daha iyi bir gelecek, doğru hazırlıkla başlar.' },
     { art: 'camera', badge: 'book', title: 'Kitabını göster', text: 'Sayfanın fotoğrafını çek, PDF ekle ya da güncel MEB ders kitabını uygulamanın içine indir.' },
     { art: 'edit', badge: 'check', title: 'Kendi cümlelerinle cevapla', text: 'Hoca cevabını anlamına göre puanlar; neyi doğru yaptığını ve neyi geliştirebileceğini söyler.' },
     { art: 'users', badge: 'cloud', title: 'Velin ilerlemeni görsün', text: 'Uygulamayı velinin telefonuna da kur, bağla. Çalışma süren ve başarın onun ekranına otomatik gelir.' },
@@ -2065,19 +2156,20 @@
       const sl = SLIDES[slideIdx];
       const last = slideIdx === SLIDES.length - 1;
       const art = sl.art === 'logo'
-        ? h('div', { class: 'slide-art' }, h('img', { src: 'icons/mark-144.png', alt: 'Sınav Hocası baykuşu' }))
+        ? h('div', { class: 'slide-art' }, h('img', { class: 'owl', src: 'icons/owl-512.png', alt: 'Sınav Hocası baykuşu' }))
         : h('div', { class: 'slide-art' }, h('div', { class: 'big' }, icon(sl.art)), sl.badge ? h('div', { class: 'badge' }, icon(sl.badge)) : null);
-      const slide = h('div', { class: 'slide', 'aria-live': 'polite' }, art, h('h1', { text: sl.title }), h('p', { text: sl.text }));
+      const title = sl.art === 'logo' ? h('h1', { class: 'wordmark' }, 'Sınav ', h('span', { text: 'Hocası' })) : h('h1', { text: sl.title });
+      const slide = h('div', { class: 'slide' + (sl.art === 'logo' ? ' splash' : ''), 'aria-live': 'polite' }, art, title, h('p', { text: sl.text }));
       let sx = null;
       slide.addEventListener('pointerdown', (e) => { sx = e.clientX; });
       slide.addEventListener('pointerup', (e) => { if (sx === null) return; const dx = e.clientX - sx; sx = null; if (dx < -50 && !last) { slideIdx++; draw(); } else if (dx > 50 && slideIdx > 0) { slideIdx--; draw(); } });
       fill(wrap, 
-        h('div', { class: 'intro-top' }, h('img', { src: 'icons/mark-144.png', alt: '' }), !last ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', text: 'Geç', on: { click: finishIntro } }) : h('span', {})),
+        h('div', { class: 'intro-top' }, slideIdx ? h('img', { src: 'icons/mark-144.png', alt: '' }) : h('span', {}), !last ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', text: 'Geç', on: { click: finishIntro } }) : h('span', {})),
         slide,
         h('div', { class: 'dots', 'aria-hidden': 'true' }, SLIDES.map((_, i) => h('i', { class: i === slideIdx ? 'on' : '' }))),
         h('div', { class: 'btn-row' },
           slideIdx > 0 ? h('button', { class: 'btn btn-secondary', type: 'button', 'aria-label': 'Önceki', on: { click: () => { slideIdx--; draw(); } } }, icon('left')) : null,
-          h('button', { class: 'btn btn-primary', type: 'button', css: { flex: '3 1 200px' }, on: { click: () => { if (last) finishIntro(); else { slideIdx++; draw(); } } } }, last ? 'Başlayalım' : 'Devam', icon('right'))));
+          h('button', { class: 'btn btn-primary', type: 'button', css: { flex: '3 1 200px' }, on: { click: () => { if (last) finishIntro(); else { slideIdx++; draw(); } } } }, last || slideIdx === 0 ? 'Başlayalım' : 'Devam', icon('right'))));
     };
     draw();
     return wrap;
@@ -2119,7 +2211,15 @@
           if (!(await confirmBox(v === 'veli' ? 'Veli kullanımına geçilsin mi?' : 'Öğrenci kullanımına geçilsin mi?', v === 'veli' ? 'Ekran, bağlı çocuklarının buluttan gelen ilerlemesini gösterecek. Bu telefondaki çalışmalar silinmez.' : 'Ekran soru çözme uygulamasına dönecek. Bağlı çocukların listede kalır.', 'Geç'))) return;
           S.settings.role = v; save(true); go(v === 'veli' ? 'vozet' : 'ana');
         }, 'Kullanım')),
-        h('div', { class: 'field' }, h('span', { text: 'Görünüm' }), seg([['auto', 'Otomatik'], ['light', 'Açık'], ['dark', 'Koyu']], S.settings.theme, (v) => { S.settings.theme = v; save(); applyTheme(); }, 'Tema')),
+        h('div', { class: 'field' }, h('span', { text: 'Görünüm' }), seg([['auto', 'Otomatik'], ['light', 'Açık'], ['dark', 'Koyu'], ['amoled', 'AMOLED']], S.settings.theme, (v) => { S.settings.theme = v; save(); applyTheme(); }, 'Tema')),
+        h('div', { class: 'field' }, h('span', { text: 'Renk teması' }), (() => {
+          const box = h('div', { class: 'swatches', role: 'group', 'aria-label': 'Renk teması' });
+          ACCENTS.forEach(([k, label]) => box.append(h('button', { class: 'sw-' + k, type: 'button', title: label, 'aria-label': label, 'aria-pressed': String(S.settings.accent === k), on: { click: () => {
+            S.settings.accent = k; save(); applyTheme();
+            box.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x.classList.contains('sw-' + k))));
+          } } })));
+          return box;
+        })()),
         h('div', { class: 'field' }, h('span', { text: 'Yazı boyutu' }), seg([['normal', 'Normal'], ['large', 'Büyük']], S.settings.textSize, (v) => { S.settings.textSize = v; save(); applyTheme(); }, 'Yazı boyutu')),
         h('label', { class: 'field' }, h('span', { text: 'Öğrencinin adı' }), nameIn, h('span', { class: 'hint', text: 'Yalnızca selamlamada kullanılır, cihazdan çıkmaz.' })),
         h('div', { class: 'panel tight' },
