@@ -1,0 +1,93 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'server/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      VERSION_NAME: "1.0.${{ github.run_number }}"
+      VERSION_CODE: "${{ github.run_number }}"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: PDF okuyucuyu hazırla
+        run: bash scripts/fetch-vendor.sh
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: İmza anahtarı (varsa)
+        id: sign
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "${KEYSTORE_BASE64}" ]; then
+            echo "${KEYSTORE_BASE64}" | base64 -d > android/app/release.jks
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Derle (test sürümü)
+        if: steps.sign.outputs.signed != 'true'
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Derle (imzalı APK + AAB)
+        if: steps.sign.outputs.signed == 'true'
+        working-directory: android
+        env:
+          KEYSTORE_PATH: release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew --no-daemon assembleRelease bundleRelease
+
+      - name: Dosyaları adlandır
+        run: |
+          mkdir -p out
+          if [ "${{ steps.sign.outputs.signed }}" = "true" ]; then
+            cp android/app/build/outputs/apk/release/app-release.apk "out/SinavHocasi-${VERSION_NAME}.apk"
+            cp android/app/build/outputs/bundle/release/app-release.aab "out/SinavHocasi-${VERSION_NAME}.aab"
+          else
+            cp android/app/build/outputs/apk/debug/app-debug.apk "out/SinavHocasi-${VERSION_NAME}-test.apk"
+          fi
+          rm -f android/app/release.jks
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SinavHocasi-${{ env.VERSION_NAME }}
+          path: out/*
+
+      - name: Sürüm sayfasına yükle
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION_NAME }}
+          name: Sınav Hocası ${{ env.VERSION_NAME }}
+          body: |
+            Telefonuna indirip kurmak için aşağıdaki .apk dosyasına dokun.
+            ${{ steps.sign.outputs.signed == 'true' && 'İmzalı sürüm. Google Play için .aab dosyasını kullan.' || 'Test sürümü (geçici imza). Google Play için imza anahtarı eklenince .aab de üretilir.' }}
+          files: out/*
+          make_latest: true

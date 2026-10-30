@@ -1,0 +1,11 @@
+app/vendor/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/*.jks
+android/app/*.jks
+*.keystore
+.DS_Store
+node_modules/
+server/.wrangler/

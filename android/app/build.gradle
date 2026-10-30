@@ -1,0 +1,76 @@
+plugins {
+    id 'com.android.application'
+}
+
+def env = System.getenv()
+def keystoreFile = file(env.KEYSTORE_PATH ?: 'release.jks')
+def hasSigning = keystoreFile.exists() && env.KEYSTORE_PASSWORD && env.KEY_ALIAS && env.KEY_PASSWORD
+
+android {
+    namespace 'com.benim.sinavhocasi'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.benim.sinavhocasi'
+        minSdk 24
+        targetSdk 36
+        versionCode((env.VERSION_CODE ?: '1').toInteger())
+        versionName env.VERSION_NAME ?: '1.0.0'
+    }
+
+    signingConfigs {
+        if (hasSigning) {
+            release {
+                storeFile keystoreFile
+                storePassword env.KEYSTORE_PASSWORD
+                keyAlias env.KEY_ALIAS
+                keyPassword env.KEY_PASSWORD
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (hasSigning) signingConfig signingConfigs.release
+        }
+        debug {
+            applicationIdSuffix '.test'
+            versionNameSuffix '-test'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    // Web arayüzü (repo kökündeki app/ klasörü) uygulamanın içine gömülür
+    sourceSets {
+        main {
+            assets.srcDirs = ['../../app']
+        }
+    }
+
+    androidResources {
+        // Tarayıcıya özel dosyalar APK'ya girmez (Android'de metin tanıma cihazda yapılır)
+        ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:<dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~:!<dir>tesseract:!sw.js:!manifest.webmanifest:!logo-original.jpg'
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
+
+dependencies {
+    implementation 'androidx.webkit:webkit:1.12.1'
+    implementation 'androidx.core:core:1.13.1'
+    implementation 'com.google.mlkit:text-recognition:16.0.1'
+}

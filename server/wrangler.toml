@@ -1,0 +1,21 @@
+name = "sinav-hocasi"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[vars]
+# Uygulamanın web ve Android kökenleri (virgülle ayrılır)
+ALLOWED_ORIGINS = "https://aliyuksekal.github.io,https://appassets.androidplatform.net"
+# Kullanılacak model; maliyet/kaliteye göre değiştirilebilir
+MODEL = "claude-haiku-5-5"
+
+# IP başına dakikada en fazla 20 istek (uç nokta başına)
+[[ratelimits]]
+name = "LIMITER"
+namespace_id = "2026"
+  [ratelimits.simple]
+  limit = 20
+  period = 60
+
+# Gizli anahtar dosyaya YAZILMAZ. Şu komutla eklenir:
+#   npx wrangler secret put ANTHROPIC_API_KEY
