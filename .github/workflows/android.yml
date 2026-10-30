@@ -38,6 +38,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v5
 
+      # İmza: KEYSTORE_BASE64 + KEYSTORE_PASSWORD gizli değerleri varsa imzalı APK + AAB üretilir
       - name: İmza anahtarı (varsa)
         id: sign
         env:
