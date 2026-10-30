@@ -32,14 +32,14 @@ Her `main` güncellemesinde GitHub Actions yeni APK'yı otomatik derleyip yayım
 
 ### Google Play için imzalı sürüm
 
-Repo → Settings → Secrets and variables → Actions bölümüne şu 4 gizli değeri ekle; sonraki derlemede imzalı **APK + AAB** üretilir:
+Repo → Settings → Secrets and variables → Actions bölümüne şu 2 gizli değeri ekle; sonraki derlemede imzalı **APK + AAB** üretilir:
 
 | Ad | Değer |
 |---|---|
 | `KEYSTORE_BASE64` | `.jks` imza dosyasının base64 hali |
 | `KEYSTORE_PASSWORD` | Anahtar deposu şifresi |
-| `KEY_ALIAS` | Anahtar adı |
-| `KEY_PASSWORD` | Anahtar şifresi |
+
+(İsteğe bağlı: anahtar adı `sinavhocasi` değilse `KEY_ALIAS`, anahtar şifresi farklıysa `KEY_PASSWORD`.)
 
 Paket adı: `com.benim.sinavhocasi` (test sürümü `com.benim.sinavhocasi.test` olarak ayrı kurulur).
 
