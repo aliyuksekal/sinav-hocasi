@@ -18,11 +18,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      VERSION_NAME: "1.0.${{ github.run_number }}"
       VERSION_CODE: "${{ github.run_number }}"
       CLOUD_PROJECT_NUMBER: ${{ secrets.CLOUD_PROJECT_NUMBER }}
     steps:
       - uses: actions/checkout@v5
+
+      # Sürüm adı uygulamanın içindeki VERSION'dan gelir (app/js/app.js); sürüm kodu her derlemede artar
+      - name: Sürüm numarası
+        run: |
+          V=$(grep -oE "const VERSION = '[0-9]+\.[0-9]+\.[0-9]+'" app/js/app.js | grep -oE "[0-9]+\.[0-9]+\.[0-9]+")
+          [ -n "$V" ] || { echo "::error::app/js/app.js içinde VERSION bulunamadı"; exit 1; }
+          echo "VERSION_NAME=$V" >> "$GITHUB_ENV"
+          echo "Sürüm: $V (kod ${VERSION_CODE})"
 
       - uses: actions/setup-node@v5
         with:
@@ -110,8 +117,8 @@ jobs:
       - name: Sürüm sayfasına yükle
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ env.VERSION_NAME }}
-          name: Sınav Hocası ${{ env.VERSION_NAME }}
+          tag_name: v${{ env.VERSION_NAME }}-${{ github.run_number }}
+          name: Sınav Hocası ${{ env.VERSION_NAME }} (yapı ${{ github.run_number }})
           body: |
             Telefonuna indirip kurmak için aşağıdaki .apk dosyasına dokun.
             ${{ steps.sign.outputs.signed == 'true' && 'İmzalı sürüm. Google Play için .aab dosyasını kullan.' || 'Test sürümü (geçici imza). Google Play için imza anahtarı eklenince .aab de üretilir.' }}
