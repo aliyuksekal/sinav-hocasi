@@ -10,7 +10,7 @@
   'use strict';
 
   const E = window.SHEngine;
-  const VERSION = '1.4.0';
+  const VERSION = '1.5.0';
   const API_BASE = 'https://sinav-hocasi.aliyuksekal.workers.dev';
   const MB = 1024 * 1024;
   const LIMITS = { imageBytes: 30 * MB, pdfBytes: 250 * MB, materials: 120, textChars: 400000, sessions: 300, answerChars: 4000, nameChars: 120, titleChars: 80 };
@@ -139,7 +139,7 @@
   // Kalıcı durum (localStorage) — okurken şemaya göre temizlenir
   // ======================================================================
   const KEY = 'sh:v1';
-  const DEFAULT_SETTINGS = { theme: 'auto', accent: 'blue', textSize: 'normal', name: '', ai: true, autoOcr: true, role: '', introDone: false };
+  const DEFAULT_SETTINGS = { theme: 'auto', accent: 'blue', textSize: 'normal', name: '', ai: true, autoOcr: true, role: '', introDone: false, tourDone: false, results: 0, rateAsked: false };
   const ACCENTS = [['blue', 'Mavi'], ['teal', 'Turkuaz'], ['purple', 'Mor'], ['green', 'Yeşil'], ['orange', 'Turuncu']];
 
   function sanitizeQuestion(q, i) {
@@ -227,6 +227,9 @@
     st.settings.autoOcr = s.autoOcr !== false;
     st.settings.role = ['ogrenci', 'veli'].includes(s.role) ? s.role : '';
     st.settings.introDone = s.introDone === true;
+    st.settings.tourDone = s.tourDone === true;
+    st.settings.results = Math.max(0, Math.min(1000, Number(s.results) || 0));
+    st.settings.rateAsked = s.rateAsked === true;
     const sy = raw.sync;
     if (sy && typeof sy === 'object' && ID_RE.test(sy.familyId || '') && ID_RE.test(sy.token || '')) {
       st.sync = { familyId: sy.familyId, token: sy.token, lastPush: Number(sy.lastPush) || 0, lastHash: clampStr(sy.lastHash, 32), error: clampStr(sy.error, 200) };
@@ -1601,9 +1604,16 @@
   // ======================================================================
   // EKRAN: Sonuç ve tekrar
   // ======================================================================
+  let lastResultSeen = '';
   function viewResult(sid) {
     const s = S.sessions.find((x) => x.id === sid);
     if (!s) return viewProgress();
+    if (sid !== lastResultSeen) {
+      lastResultSeen = sid;
+      S.settings.results++; save();
+      // 3. çalışmadan sonra bir kez, kolayca kapatılabilen puan isteği
+      if (S.settings.results >= 3 && !S.settings.rateAsked) setTimeout(askRating, 1200);
+    }
     const st = sessionStats(s);
     const weak = s.questions.filter((q) => { const a = s.answers[q.id]; return !a || !a.eval || a.eval.score < 60; });
     const cnt = { dogru: 0, kismen: 0, gelistir: 0, bos: 0 };
@@ -2417,6 +2427,8 @@
       S.settings.role = r; save(true);
       if (r === 'ogrenci') Sync.schedule(1000);
       go(r === 'veli' ? 'vozet' : 'ana');
+      render();
+      setTimeout(() => startTour(false), 600);
     };
     return h('div', { class: 'intro' },
       h('div', { class: 'intro-top' }, h('img', { src: 'icons/mark-144.png', alt: '' }), h('span', {})),
@@ -2431,6 +2443,96 @@
   // ======================================================================
   // Ayarlar ve durum
   // ======================================================================
+  // ----------------------------------------------------------------------
+  // Puan verme, yardım ve ilk kullanım rehberi
+  // ----------------------------------------------------------------------
+  const PLAY_URL = 'https://play.google.com/store/apps/details?id=com.benim.sinavhocasi';
+  function rateApp() {
+    S.settings.rateAsked = true; save();
+    if (Native.has && typeof window.SHNative.rateApp === 'function') { try { window.SHNative.rateApp(); return; } catch (e) { /* tarayıcıya düş */ } }
+    openExternal(PLAY_URL);
+  }
+  function askRating() {
+    if (sheetOpen || S.settings.rateAsked) return;
+    S.settings.rateAsked = true; save();
+    openSheet('Sınav Hocası işine yarıyor mu?', (b, close) => {
+      b.append(
+        h('p', { class: 'muted', text: 'Beğendiysen Google Play’de birkaç yıldız ve kısa bir yorum bırakır mısın? Başka öğrencilerin de uygulamayı bulmasına yardım eder.' }),
+        h('div', { class: 'btn-row' },
+          h('button', { class: 'btn btn-secondary', type: 'button', text: 'Daha sonra', on: { click: () => close() } }),
+          h('button', { class: 'btn btn-primary', type: 'button', on: { click: () => { close(); rateApp(); } } }, icon('star'), 'Puan ver')));
+    });
+  }
+  const FAQ = [
+    ['Soruları nereden üretiyor?', 'Senin eklediğin kitap sayfalarından. Materyaller sekmesinde fotoğraf çek, galeriden seç, PDF ekle ya da MEB kitabını indir. Sonra Çalış sekmesinden konu seçip soruları başlat.'],
+    ['Cevabımı nasıl puanlıyor?', 'Cevabının anlamına ve içerdiği kavramlara bakar; ezber cümleyi değil, anladığını görmek ister. Her sorudan sonra neyi doğru yaptığını ve neyi geliştirebileceğini söyler.'],
+    ['İnternet gerekiyor mu?', 'Hayır. Fotoğraftaki yazıyı tanıma, soru üretme ve değerlendirme telefonda çalışır. İnternet yalnızca MEB kitabı indirmek, veli eşitlemesi ve Plus yapay zekâsı için gerekir.'],
+    ['Velim ilerlememi nasıl görür?', 'Veli sekmesinde 6 haneli kod üret. Velin kendi telefonunda Sınav Hocası’nı açıp “Veliyim”i seçer ve kodu yazar. Çalışma süren ve puanların onun telefonuna gelir.'],
+    ['Veli PIN’imi unuttum.', 'Ayarlar → Tüm verileri sil ile sıfırlayabilirsin. Silmeden önce “Yedeği indir” ile ilerlemeni kaydet.'],
+    ['Telefon değiştireceğim, verilerim ne olur?', 'Ayarlar → Yedeği indir ile dosyayı al, yeni telefonda Yedeği yükle ile geri aç. Fotoğraf ve PDF dosyaları yedeğe girmez, metinleri girer.'],
+    ['Sınav Hocası Plus nedir?', 'Yapay zekâ ile daha zengin sorular ve daha ayrıntılı değerlendirme sunar. Veli telefonundaki Plus sekmesinden alınır; uygulama Plus olmadan da tamamen kullanılabilir.']
+  ];
+  function openHelp() {
+    openSheet('Yardım ve sık sorulanlar', (b) => {
+      FAQ.forEach(([q, a]) => b.append(h('details', { class: 'faq' }, h('summary', { text: q }), h('p', { class: 'muted', text: a }))));
+      b.append(h('button', { class: 'btn btn-soft btn-block', type: 'button', css: { 'margin-top': '14px' }, on: { click: () => { closeSheet(); setTimeout(() => startTour(true), 250); } } }, 'Ekran rehberini başlat'));
+    });
+  }
+  const TOUR = {
+    ogrenci: [
+      ['.tabbar a[data-tab="materyaller"]', 'Materyaller', 'Ders kitabının sayfasını çek, galeriden ya da PDF olarak ekle veya MEB kitabını indir. Sorular buradan üretilir.'],
+      ['.tabbar a[data-tab="calis"]', 'Çalış', 'Konu seç, soruları başlat ve cevabını kendi cümlelerinle yaz. Hoca anlamına göre puanlar.'],
+      ['.tabbar a[data-tab="ilerleme"]', 'İlerleme', 'Çalışma serin, başarı grafiğin ve zorlandığın konular burada.'],
+      ['.tabbar a[data-tab="veli"]', 'Veli', 'Veli paneli PIN ile korunur. Velinin telefonunu buradan bağlarsın.'],
+      ['#btnSettings', 'Ayarlar', 'Tema, yazı boyutu, yardım, puan verme ve yedekleme burada. Bu rehberi buradan tekrar açabilirsin.']
+    ],
+    veli: [
+      ['.tabbar a[data-tab="vozet"]', 'Özet', 'Çocuğunun çalışma süresi, puanları ve zorlandığı konular.'],
+      ['.tabbar a[data-tab="vcocuk"]', 'Çocuklarım', 'Çocuğunun telefonundaki 6 haneli kodla bağlan. Birden fazla çocuk ekleyebilirsin.'],
+      ['.tabbar a[data-tab="vplus"]', 'Plus', 'Yapay zekâ destekli sorular ve değerlendirme için Plus aboneliği.'],
+      ['.tabbar a[data-tab="vpaylas"]', 'Paylaş', 'Raporu ve uygulamayı diğer velilerle paylaş.'],
+      ['#btnSettings', 'Ayarlar', 'Tema, yardım ve puan verme burada. Bu rehberi buradan tekrar açabilirsin.']
+    ]
+  };
+  let tourOn = false;
+  function startTour(force) {
+    const role = S.settings.role;
+    if (tourOn || !role || !S.settings.introDone || (!force && S.settings.tourDone) || sheetOpen) return;
+    const steps = (TOUR[role] || []).filter(([sel]) => { const el = $(sel); return el && el.getBoundingClientRect().width > 0; });
+    if (!steps.length) return;
+    tourOn = true;
+    let i = 0;
+    const layer = h('div', { class: 'tour', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Uygulama rehberi' });
+    const hole = h('div', { class: 'tour-hole' });
+    const tip = h('div', { class: 'tour-tip' });
+    layer.append(hole, tip);
+    document.body.append(layer);
+    const end = () => { tourOn = false; layer.remove(); window.removeEventListener('resize', place); S.settings.tourDone = true; save(); };
+    function place() {
+      const [sel, title, text] = steps[i];
+      const el = $(sel);
+      if (!el) { end(); return; }
+      const r = el.getBoundingClientRect();
+      const pad = 6;
+      Object.assign(hole.style, { left: (r.left - pad) + 'px', top: (r.top - pad) + 'px', width: (r.width + pad * 2) + 'px', height: (r.height + pad * 2) + 'px' });
+      const last = i === steps.length - 1;
+      fill(tip,
+        h('div', { class: 'xs muted', text: (i + 1) + ' / ' + steps.length }),
+        h('b', { class: 'tour-title', text: title }),
+        h('p', { text }),
+        h('div', { class: 'btn-row' },
+          last ? h('span', {}) : h('button', { class: 'btn btn-ghost btn-sm', type: 'button', text: 'Rehberi geç', on: { click: end } }),
+          h('button', { class: 'btn btn-primary btn-sm', type: 'button', text: last ? 'Anladım' : 'Sonraki', on: { click: () => { if (last) end(); else { i++; place(); } } } })));
+      const below = r.top < window.innerHeight / 2;
+      tip.style.left = '16px'; tip.style.right = '16px';
+      if (below) { tip.style.top = (r.bottom + 14) + 'px'; tip.style.bottom = ''; }
+      else { tip.style.bottom = (window.innerHeight - r.top + 14) + 'px'; tip.style.top = ''; }
+      const b = tip.querySelector('.btn-primary'); if (b) b.focus({ preventScroll: true });
+    }
+    window.addEventListener('resize', place);
+    place();
+  }
+
   async function openSettings() {
     const [hasPdf, hasOcr] = await Promise.all([probe('vendor/pdfjs/pdf.min.js'), probe('vendor/tesseract/tesseract.min.js')]);
     libAvailable.pdf = hasPdf; if (libAvailable.ocr === null) libAvailable.ocr = hasOcr;
@@ -2473,6 +2575,10 @@
           h('div', {}, h('span', { text: 'Veli telefonuyla bulut eşitleme' }), chip(Server.canSync, 'Hazır', 'Sunucu bekleniyor')),
           h('div', {}, h('span', { text: 'Sınav Hocası Plus' }), plusChip())),
         h('button', { class: 'btn btn-soft btn-block', type: 'button', css: { 'margin-top': '14px' }, on: { click: shareApp } }, icon('share'), 'Uygulamayı paylaş'),
+        h('button', { class: 'btn btn-soft btn-block', type: 'button', css: { 'margin-top': '10px' }, on: { click: rateApp } }, icon('star'), 'Uygulamayı puanla'),
+        h('div', { class: 'btn-row', css: { 'margin-top': '10px' } },
+          h('button', { class: 'btn btn-secondary', type: 'button', on: { click: () => { closeSheet(); setTimeout(openHelp, 60); } } }, 'Yardım ve SSS'),
+          h('button', { class: 'btn btn-secondary', type: 'button', on: { click: () => { closeSheet(); setTimeout(() => startTour(true), 250); } } }, 'Rehberi tekrar göster')),
         h('h2', { text: 'Verilerim', css: { 'margin-top': '22px' } }),
         h('div', { class: 'btn-row' },
           h('button', { class: 'btn btn-secondary', type: 'button', on: { click: exportBackup } }, icon('download'), 'Yedeği indir'),
@@ -2577,6 +2683,8 @@
     bindInputs();
     await loadMaterials();
     render();
+    window.addEventListener('hashchange', () => setTimeout(() => startTour(false), 400));
+    setTimeout(() => startTour(false), 700);
     Server.check().then(() => { if (['calis', 'vozet', 'vcocuk', 'veli'].includes(route().name) && !sheetOpen) render(); Sync.schedule(2000); Plus.start().then(() => { if (route().name === 'vplus' && !sheetOpen) render(); }); });
     probe('vendor/pdfjs/pdf.min.js').then((ok) => { libAvailable.pdf = ok; });
     if ('serviceWorker' in navigator && location.protocol === 'https:' && !Native.has && location.hostname !== 'appassets.androidplatform.net') {

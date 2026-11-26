@@ -2,6 +2,7 @@ package com.benim.sinavhocasi;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.Intent;
@@ -227,7 +228,22 @@ public class MainActivity extends Activity {
 
     private void handleBack() {
         if (web != null && web.canGoBack()) web.goBack();
-        else finish();
+        else confirmExit();
+    }
+
+    /** Ana ekranda geri tuşu: yanlışlıkla çıkmayı önlemek için onay sorar. */
+    private boolean exitDialogOpen = false;
+    private void confirmExit() {
+        if (exitDialogOpen || isFinishing()) return;
+        exitDialogOpen = true;
+        AlertDialog d = new AlertDialog.Builder(this)
+                .setTitle("Sınav Hocası")
+                .setMessage("Uygulamadan çıkmak istiyor musun?")
+                .setPositiveButton("Çık", (x, w) -> finish())
+                .setNegativeButton("Vazgeç", null)
+                .create();
+        d.setOnDismissListener(x -> exitDialogOpen = false);
+        d.show();
     }
 
     @SuppressWarnings("deprecation")
@@ -235,7 +251,7 @@ public class MainActivity extends Activity {
     public void onBackPressed() {
         if (Build.VERSION.SDK_INT >= 33) { handleBack(); return; }
         if (web != null && web.canGoBack()) web.goBack();
-        else super.onBackPressed();
+        else confirmExit();
     }
 
     // ------------------------------------------------------------------
@@ -511,6 +527,21 @@ public class MainActivity extends Activity {
             File f = new File(new File(getCacheDir(), "books"), name);
             //noinspection ResultOfMethodCallIgnored
             f.delete();
+        }
+
+        @JavascriptInterface
+        public void rateApp() {
+            if (!fromOurPage()) return;
+            runOnUiThread(() -> {
+                try {
+                    Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=" + getPackageName()));
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+                    startActivity(i);
+                } catch (ActivityNotFoundException e) {
+                    try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=" + getPackageName()))); }
+                    catch (ActivityNotFoundException ignored) { }
+                }
+            });
         }
 
         @JavascriptInterface
